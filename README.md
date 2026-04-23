@@ -62,7 +62,23 @@ That's it. No database server. No Python. No cloud account.
 
 > Leave the terminal window open while you use the app. Closing it stops the app.
 
-### Step 3 — Load your Tally data
+### Step 3 — Install the Tally loader (one-time, only if you want Option A)
+The **Import from Tally** button relies on an open-source helper called `tally-database-loader`. It isn't bundled with this repo — download it once:
+
+1. Download the ZIP from [https://github.com/dhimant1990/tally-database-loader](https://github.com/dhimant1990/tally-database-loader) → **Code** → **Download ZIP**.
+2. Extract it. You'll get a folder named `tally-database-loader-main`.
+3. Drop that folder **inside your FinAnalyzer folder**, so the path looks like:
+   `<FinAnalyzer>/tally-database-loader-main/`
+4. Open Terminal / PowerShell in that loader folder and run:
+   ```bash
+   npm install
+   npm run build
+   ```
+5. Restart FinAnalyzer. The warning *"Loader utility not found"* should disappear.
+
+Skip this step if you only plan to import `.TSF` files (Option B).
+
+### Step 4 — Load your Tally data
 You have **three ways** to get data into FinAnalyzer:
 
 **Option A — One-click Tally import (fastest)**
@@ -78,13 +94,13 @@ If a colleague has already exported the company's data as a `.TSF` file:
 **Option C — TSF Raw to Excel utility (no analysis needed)**
 On the first page, there is a standalone **TSF Raw to Excel** converter if you just want flat CSV-style sheets.
 
-### Step 4 — Run modules
+### Step 5 — Run modules
 Click any module on the left sidebar. Each module has:
 - Filters at the top (date range, ledger selection, primary group)
 - A preview table
 - An **Export Beautiful Excel** button top-right — this is the deliverable for your file
 
-### Step 5 — Close the app
+### Step 6 — Close the app
 - **Windows:** double-click `close_software.bat` (or simply close the black terminal window).
 - **macOS:** press `Ctrl+C` in the terminal, then close it.
 

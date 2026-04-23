@@ -1,6 +1,10 @@
 # ---- Dependencies & build output ----
 node_modules/
 dist/
+
+# ---- Third-party tool (users install separately, see README) ----
+tally-database-loader-main/
+tally-database-loader-main (1)/
 sea/out/
 desktop-backend/target/
 src-tauri/target/
