@@ -1,0 +1,32 @@
+[
+  {
+    "guid": "GUID-001",
+    "date": "20250401",
+    "voucher_number": "PV-001",
+    "reference_number": "REF-001",
+    "voucher_type": "Purchase",
+    "narration": "Purchase entry",
+    "party_name": "Supplier A",
+    "is_accounting_voucher": "Yes"
+  },
+  {
+    "guid": "GUID-002",
+    "date": "02/04/2025",
+    "voucher_number": "",
+    "reference_number": "INV-002",
+    "voucher_type": "Sales",
+    "narration": "Sale entry",
+    "party_name": "Customer B",
+    "is_accounting_voucher": "true"
+  },
+  {
+    "guid": "GUID-003",
+    "date": "2025-04-03",
+    "voucher_number": "DN-003",
+    "reference_number": "DN-003",
+    "voucher_type": "Delivery Note",
+    "narration": "Non-accounting row",
+    "party_name": "Customer C",
+    "is_accounting_voucher": "No"
+  }
+]

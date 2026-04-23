@@ -1,0 +1,7 @@
+[
+  { "name": "Cash-in-hand", "primary_group": "Current Assets" },
+  { "name": "Direct Expenses", "primary_group": "Expenses" },
+  { "name": "Sundry Debtors", "primary_group": "Current Assets" },
+  { "name": "Sales Accounts", "primary_group": "Income" },
+  { "name": "Current Assets", "primary_group": "Assets" }
+]

@@ -1,0 +1,50 @@
+[
+  {
+    "name": "Cash",
+    "parent": "Cash-in-hand",
+    "gstn": "",
+    "opening_balance": "100",
+    "closing_balance": "-1400",
+    "is_revenue": "No"
+  },
+  {
+    "name": "Purchase Ledger",
+    "parent": "Direct Expenses",
+    "gstn": "",
+    "opening_balance": "0",
+    "closing_balance": "0",
+    "is_revenue": "No"
+  },
+  {
+    "name": "Customer A",
+    "parent": "Sundry Debtors",
+    "gstn": "29ABCDE1234F1Z5",
+    "opening_balance": "5000",
+    "closing_balance": "7500",
+    "is_revenue": "No"
+  },
+  {
+    "name": "Sales Ledger",
+    "parent": "Sales Accounts",
+    "gstn": "",
+    "opening_balance": "0",
+    "closing_balance": "0",
+    "is_revenue": "Yes"
+  },
+  {
+    "name": "Closing Stock",
+    "parent": "Current Assets",
+    "gstn": "",
+    "opening_balance": "0",
+    "closing_balance": "0",
+    "is_revenue": "No"
+  },
+  {
+    "name": "Closing Stock",
+    "parent": "Current Assets",
+    "gstn": "",
+    "opening_balance": "0",
+    "closing_balance": "1200",
+    "is_revenue": "No"
+  }
+]

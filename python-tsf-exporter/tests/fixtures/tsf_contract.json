@@ -1,0 +1,168 @@
+{
+  "creation_order": [
+    "ledger_entries",
+    "gstr2b_imports",
+    "gstr2b_import_rows",
+    "gstr2b_reco_runs",
+    "trn_accounting",
+    "mst_ledger",
+    "trial_balance_from_mst_ledger"
+  ],
+  "tables": {
+    "ledger_entries": {
+      "create_sql": "CREATE TABLE ledger_entries ( id INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT, date TEXT, voucher_type TEXT, voucher_number TEXT, invoice_number TEXT, reference_number TEXT, narration TEXT, party_name TEXT, gstin TEXT, ledger TEXT, amount REAL, group_name TEXT, opening_balance REAL, closing_balance REAL, tally_parent TEXT, tally_primary TEXT, is_revenue INTEGER, is_accounting_voucher INTEGER, is_master_ledger INTEGER )",
+      "columns": [
+        { "name": "id", "type": "INTEGER", "notnull": 0, "default": null, "pk": 1 },
+        { "name": "guid", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "date", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "voucher_type", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "voucher_number", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "invoice_number", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "reference_number", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "narration", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "party_name", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "gstin", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "ledger", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "amount", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "group_name", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "opening_balance", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "closing_balance", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "tally_parent", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "tally_primary", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "is_revenue", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "is_accounting_voucher", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "is_master_ledger", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 }
+      ],
+      "indexes": [
+        { "name": "idx_ledger_entries_date", "columns": ["date"], "sql": "CREATE INDEX idx_ledger_entries_date ON ledger_entries(date)" },
+        { "name": "idx_ledger_entries_ledger", "columns": ["ledger"], "sql": "CREATE INDEX idx_ledger_entries_ledger ON ledger_entries(ledger)" },
+        { "name": "idx_ledger_entries_parent", "columns": ["tally_parent"], "sql": "CREATE INDEX idx_ledger_entries_parent ON ledger_entries(tally_parent)" },
+        { "name": "idx_ledger_entries_primary", "columns": ["tally_primary"], "sql": "CREATE INDEX idx_ledger_entries_primary ON ledger_entries(tally_primary)" },
+        { "name": "idx_ledger_entries_voucher", "columns": ["voucher_number"], "sql": "CREATE INDEX idx_ledger_entries_voucher ON ledger_entries(voucher_number)" }
+      ]
+    },
+    "gstr2b_imports": {
+      "create_sql": "CREATE TABLE gstr2b_imports ( import_id TEXT PRIMARY KEY, source_name TEXT, uploaded_at TEXT, rtnprd TEXT, entity_gstin TEXT, version TEXT, generated_at TEXT, count_total INTEGER, count_b2b INTEGER, count_cdnr INTEGER, count_b2ba INTEGER, totals_json TEXT )",
+      "columns": [
+        { "name": "import_id", "type": "TEXT", "notnull": 0, "default": null, "pk": 1 },
+        { "name": "source_name", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "uploaded_at", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "rtnprd", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "entity_gstin", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "version", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "generated_at", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "count_total", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "count_b2b", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "count_cdnr", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "count_b2ba", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "totals_json", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 }
+      ],
+      "indexes": [
+        { "name": "idx_gstr2b_imports_uploaded_at", "columns": ["uploaded_at"], "sql": "CREATE INDEX idx_gstr2b_imports_uploaded_at ON gstr2b_imports(uploaded_at)" }
+      ]
+    },
+    "gstr2b_import_rows": {
+      "create_sql": "CREATE TABLE gstr2b_import_rows ( id INTEGER PRIMARY KEY AUTOINCREMENT, import_id TEXT, section TEXT, supplier_gstin TEXT, supplier_name TEXT, invoice_no TEXT, invoice_no_norm TEXT, invoice_date TEXT, taxable REAL, igst REAL, cgst REAL, sgst REAL, cess REAL, total_tax REAL, total_value REAL, reverse_charge INTEGER, type TEXT, itc_availability TEXT, pos TEXT, entity_gstin TEXT, branch TEXT, is_amended INTEGER, is_isd INTEGER, raw_json TEXT )",
+      "columns": [
+        { "name": "id", "type": "INTEGER", "notnull": 0, "default": null, "pk": 1 },
+        { "name": "import_id", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "section", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "supplier_gstin", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "supplier_name", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "invoice_no", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "invoice_no_norm", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "invoice_date", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "taxable", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "igst", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "cgst", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "sgst", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "cess", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "total_tax", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "total_value", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "reverse_charge", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "type", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "itc_availability", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "pos", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "entity_gstin", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "branch", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "is_amended", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "is_isd", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "raw_json", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 }
+      ],
+      "indexes": [
+        { "name": "idx_gstr2b_rows_import_id", "columns": ["import_id"], "sql": "CREATE INDEX idx_gstr2b_rows_import_id ON gstr2b_import_rows(import_id)" },
+        { "name": "idx_gstr2b_rows_supplier_invoice", "columns": ["supplier_gstin", "invoice_no_norm", "invoice_date"], "sql": "CREATE INDEX idx_gstr2b_rows_supplier_invoice ON gstr2b_import_rows(supplier_gstin, invoice_no_norm, invoice_date)" }
+      ]
+    },
+    "gstr2b_reco_runs": {
+      "create_sql": "CREATE TABLE gstr2b_reco_runs ( run_id TEXT PRIMARY KEY, import_id TEXT, created_at TEXT, scope_month TEXT, scope_entity_gstin TEXT, scope_branch TEXT, config_json TEXT, result_json TEXT )",
+      "columns": [
+        { "name": "run_id", "type": "TEXT", "notnull": 0, "default": null, "pk": 1 },
+        { "name": "import_id", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "created_at", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "scope_month", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "scope_entity_gstin", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "scope_branch", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "config_json", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "result_json", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 }
+      ],
+      "indexes": [
+        { "name": "idx_gstr2b_runs_created_at", "columns": ["created_at"], "sql": "CREATE INDEX idx_gstr2b_runs_created_at ON gstr2b_reco_runs(created_at)" }
+      ]
+    },
+    "trn_accounting": {
+      "create_sql": "CREATE TABLE trn_accounting ( id INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT, date TEXT, voucher_type TEXT, voucher_number TEXT, invoice_number TEXT, reference_number TEXT, narration TEXT, party_name TEXT, ledger TEXT, amount REAL, group_name TEXT, tally_parent TEXT, tally_primary TEXT, gstin TEXT, is_revenue INTEGER, is_accounting_voucher INTEGER )",
+      "columns": [
+        { "name": "id", "type": "INTEGER", "notnull": 0, "default": null, "pk": 1 },
+        { "name": "guid", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "date", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "voucher_type", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "voucher_number", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "invoice_number", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "reference_number", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "narration", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "party_name", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "ledger", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "amount", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "group_name", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "tally_parent", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "tally_primary", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "gstin", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "is_revenue", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "is_accounting_voucher", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 }
+      ],
+      "indexes": []
+    },
+    "mst_ledger": {
+      "create_sql": "CREATE TABLE mst_ledger ( id INTEGER PRIMARY KEY AUTOINCREMENT, ledger TEXT, group_name TEXT, tally_parent TEXT, tally_primary TEXT, gstin TEXT, is_revenue INTEGER, opening_balance REAL, closing_balance REAL )",
+      "columns": [
+        { "name": "id", "type": "INTEGER", "notnull": 0, "default": null, "pk": 1 },
+        { "name": "ledger", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "group_name", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "tally_parent", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "tally_primary", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "gstin", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "is_revenue", "type": "INTEGER", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "opening_balance", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "closing_balance", "type": "REAL", "notnull": 0, "default": null, "pk": 0 }
+      ],
+      "indexes": []
+    },
+    "trial_balance_from_mst_ledger": {
+      "create_sql": "CREATE TABLE trial_balance_from_mst_ledger ( id INTEGER PRIMARY KEY AUTOINCREMENT, ledger TEXT, tally_primary TEXT, tally_parent TEXT, opening_balance REAL, closing_balance REAL, opening_dr REAL, opening_cr REAL, closing_dr REAL, closing_cr REAL )",
+      "columns": [
+        { "name": "id", "type": "INTEGER", "notnull": 0, "default": null, "pk": 1 },
+        { "name": "ledger", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "tally_primary", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "tally_parent", "type": "TEXT", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "opening_balance", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "closing_balance", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "opening_dr", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "opening_cr", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "closing_dr", "type": "REAL", "notnull": 0, "default": null, "pk": 0 },
+        { "name": "closing_cr", "type": "REAL", "notnull": 0, "default": null, "pk": 0 }
+      ],
+      "indexes": []
+    }
+  }
+}

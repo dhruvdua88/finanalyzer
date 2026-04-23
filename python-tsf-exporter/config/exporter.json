@@ -1,0 +1,4 @@
+{
+  "loaderRoot": "vendor/tally-loader",
+  "nodeRuntimeRoot": "vendor/node"
+}

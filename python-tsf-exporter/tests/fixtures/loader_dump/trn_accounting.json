@@ -1,0 +1,7 @@
+[
+  { "guid": "GUID-001", "ledger": "Cash", "amount": "-1500.00" },
+  { "guid": "GUID-001", "ledger": "Purchase Ledger", "amount": "1500.00" },
+  { "guid": "GUID-002", "ledger": "Customer A", "amount": "2500.00" },
+  { "guid": "GUID-002", "ledger": "Sales Ledger", "amount": "-2500.00" },
+  { "guid": "GUID-003", "ledger": "Inventory", "amount": "500.00" }
+]

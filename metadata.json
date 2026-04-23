@@ -1,0 +1,7 @@
+{
+  "name": "Tally Audit Utility 2026",
+  "version": "1.1.0",
+  "description": "A professional financial analysis tool for parsing Tally exports, performing GST rate validation, and visualizing voucher-level data.",
+  "requestFramePermissions": [],
+  "updateCheckUrl": ""
+}

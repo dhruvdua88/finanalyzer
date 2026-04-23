@@ -1,0 +1,55 @@
+# ---- Dependencies & build output ----
+node_modules/
+dist/
+sea/out/
+desktop-backend/target/
+src-tauri/target/
+release/
+*.tsbuildinfo
+
+# ---- Logs & runtime ----
+*.log
+__devcheck.log
+vite-dev.log
+.vite-*.pid
+.tally-source-temp/
+
+# ---- OS & editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---- Local tooling / AI assistants ----
+.claude/
+.cursor/
+
+# ---- Env & secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---- Packaged archives (rebuildable) ----
+python-tsf-exporter.zip
+session_changed_files_*/
+session_changed_files_*.zip
+
+# ---- Sensitive client data (NEVER commit) ----
+# Real GSTR / Tally exports, trial balances, dashboards etc.
+# Keep only sanitized sample files under /samples if needed.
+returns_R2B_*.json
+TrialBal.pdf
+FinAnalyzer_Dashboard.xlsx
+*.TSF
+*.tsf
+
+# ---- Internal presentation material (not for public repo) ----
+*.pptx
+FinAnalyzer_Presenter_Notes.md
+
+# ---- Screenshots kept intentionally: allow SCR-*.png ----
+# (delete the next line if you want screenshots tracked)
+# SCR-*.png

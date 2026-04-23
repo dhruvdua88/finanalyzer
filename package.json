@@ -1,0 +1,36 @@
+{
+  "name": "tally-audit-utility-2026",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "FinAnalyzer desktop utility with Tally one-click import and SQL-backed analytics.",
+  "author": "FinAnalyzer",
+  "scripts": {
+    "dev": "cross-env NODE_OPTIONS=--no-deprecation vite",
+    "build": "cross-env NODE_OPTIONS=--no-deprecation vite build",
+    "preview": "cross-env NODE_OPTIONS=--no-deprecation vite preview",
+    "test:gstr2b": "node --test desktop-backend/tests/gstr2bReconciliation.test.cjs",
+    "tauri:prepare": "node scripts/prepare-tauri-node.cjs",
+    "tauri:dev": "cmd /c \"set NODE_OPTIONS=--no-deprecation&& set PATH=%USERPROFILE%\\.cargo\\bin;%PATH%&& tauri dev\"",
+    "tauri:build": "cmd /c \"set NODE_OPTIONS=--no-deprecation&& set PATH=%USERPROFILE%\\.cargo\\bin;%PATH%&& tauri build\""
+  },
+  "dependencies": {
+    "dayjs": "^1.11.19",
+    "lucide-react": "^0.563.0",
+    "papaparse": "^5.5.3",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "recharts": "^3.7.0",
+    "xlsx": "^0.18.5",
+    "xlsx-js-style": "^1.2.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/cli": "^2.10.0",
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "cross-env": "^10.1.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}
