@@ -63,20 +63,53 @@ That's it. No database server. No Python. No cloud account.
 > Leave the terminal window open while you use the app. Closing it stops the app.
 
 ### Step 3 — Install the Tally loader (one-time, only if you want Option A)
-The **Import from Tally** button relies on an open-source helper called `tally-database-loader`. It isn't bundled with this repo — download it once:
+The **Import from Tally** button relies on a helper utility called `tally-database-loader`. It isn't bundled with this repo — download the **pre-built** version once. No `npm install` needed.
 
-1. Download the ZIP from [https://github.com/dhimant1990/tally-database-loader](https://github.com/dhimant1990/tally-database-loader) → **Code** → **Download ZIP**.
-2. Extract it. You'll get a folder named `tally-database-loader-main`.
-3. Drop that folder **inside your FinAnalyzer folder**, so the path looks like:
-   `<FinAnalyzer>/tally-database-loader-main/`
-4. Open Terminal / PowerShell in that loader folder and run:
-   ```bash
-   npm install
-   npm run build
-   ```
-5. Restart FinAnalyzer. The warning *"Loader utility not found"* should disappear.
+**A. Download (≈15 MB, pre-built)**
 
-Skip this step if you only plan to import `.TSF` files (Option B).
+Click → [https://excelkida.com/resource/tally-database-loader-utility-1.0.42.7z](https://excelkida.com/resource/tally-database-loader-utility-1.0.42.7z)
+
+The file is a `.7z` archive (like `.zip` but compressed better).
+
+**B. Extract it**
+
+- **Windows:** install [7-Zip](https://www.7-zip.org/) (free, one-time). Right-click the `.7z` file → **7-Zip → Extract Here**.
+- **macOS:** install [The Unarchiver](https://theunarchiver.com/) from the App Store (free, one-time). Double-click the `.7z` file.
+- **Linux:** `sudo apt install p7zip-full` then `7z x tally-database-loader-utility-1.0.42.7z`.
+
+**C. Rename the extracted folder**
+
+You'll get a folder whose name starts with `tally-database-loader-utility…`. **Rename it to exactly:**
+
+```
+tally-database-loader-main
+```
+
+(The app looks for this exact name — no spaces, no version number.)
+
+**D. Place it inside the FinAnalyzer folder**
+
+Drag the renamed folder into your FinAnalyzer folder. The final layout must look like this:
+
+```
+FinAnalyzer/
+├── tally-database-loader-main/   ← the folder you just renamed
+│   ├── dist/
+│   │   └── index.mjs             ← must exist
+│   ├── config.json               ← must exist
+│   └── …
+├── App.tsx
+├── package.json
+└── run_software.bat (or run_software_mac.command)
+```
+
+**E. Restart FinAnalyzer**
+
+Close the terminal running FinAnalyzer, then double-click `run_software.bat` (Windows) or `run_software_mac.command` (Mac) again. The warning *"Loader utility not found"* will disappear and **Import from Tally** will work.
+
+> **Troubleshooting:** if FinAnalyzer still shows the warning, open the `tally-database-loader-main` folder and confirm both `dist/index.mjs` and `config.json` exist. If `dist/` is missing, your archive was a source-only version — in that case open Terminal in that folder and run `npm install && npm run build`.
+
+Skip this entire step if you only plan to import `.TSF` files (Option B).
 
 ### Step 4 — Load your Tally data
 You have **three ways** to get data into FinAnalyzer:
