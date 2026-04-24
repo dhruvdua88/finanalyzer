@@ -28,6 +28,7 @@ const ExceptionDensityHeatmapAnalytics = lazy(() => import('./components/modules
 const BalanceSheetCleanlinessAnalytics = lazy(() => import('./components/modules/BalanceSheetCleanlinessAnalytics'));
 const TSFComparison = lazy(() => import('./components/modules/TSFComparison'));
 const ITC3BReconciliation = lazy(() => import('./components/modules/ITC3BReconciliation'));
+const OrphanPLVouchers = lazy(() => import('./components/modules/OrphanPLVouchers'));
 
 const MODULE_LABELS: Record<AnalysisType, string> = {
   [AnalysisType.DASHBOARD]: 'Dashboard Overview',
@@ -55,6 +56,7 @@ const MODULE_LABELS: Record<AnalysisType, string> = {
   [AnalysisType.RELATED_PARTY_ANALYSIS]: 'Related Party (RPT) Analysis',
   [AnalysisType.GST_LEDGER_SUMMARY]: 'GST Ledger Constitution Analysis',
   [AnalysisType.ITC_3B_RECONCILIATION]: 'ITC vs 3B Reconciliation',
+  [AnalysisType.ORPHAN_PL_VOUCHERS]: 'Orphan P&L Vouchers',
 };
 
 type ModuleIcon = React.ComponentType<{ size?: number; className?: string }>;
@@ -85,6 +87,7 @@ const MODULE_ICONS: Record<AnalysisType, ModuleIcon> = {
   [AnalysisType.RELATED_PARTY_ANALYSIS]: ShieldCheck,
   [AnalysisType.GST_LEDGER_SUMMARY]: PieChart,
   [AnalysisType.ITC_3B_RECONCILIATION]: FileSearch,
+  [AnalysisType.ORPHAN_PL_VOUCHERS]: AlertTriangle,
 };
 
 const MODULE_SECTIONS: Array<{ id: string; title: string; description: string; modules: AnalysisType[] }> = [
@@ -145,7 +148,11 @@ const MODULE_SECTIONS: Array<{ id: string; title: string; description: string; m
     id: 'advanced-analytics',
     title: 'Advanced Analytics',
     description: 'Exception density and balance sheet hygiene diagnostics.',
-    modules: [AnalysisType.EXCEPTION_DENSITY_HEATMAP, AnalysisType.BALANCE_SHEET_CLEANLINESS],
+    modules: [
+      AnalysisType.EXCEPTION_DENSITY_HEATMAP,
+      AnalysisType.BALANCE_SHEET_CLEANLINESS,
+      AnalysisType.ORPHAN_PL_VOUCHERS,
+    ],
   },
 ];
 
@@ -736,6 +743,9 @@ const App: React.FC = () => {
               )}
               {activeModule === AnalysisType.BALANCE_SHEET_CLEANLINESS && (
                 <BalanceSheetCleanlinessAnalytics data={transactionData} />
+              )}
+              {activeModule === AnalysisType.ORPHAN_PL_VOUCHERS && (
+                <OrphanPLVouchers data={transactionData} />
               )}
               {activeModule === AnalysisType.TSF_COMPARISON && <TSFComparison />}
               {activeModule === AnalysisType.LEDGER_ANALYTICS && <LedgerAnalytics data={transactionData} />}
