@@ -197,6 +197,98 @@ const createBackendServer = async (options) => {
     `).all();
   };
 
+  /**
+   * Filter + paginate ledger_entries from a query-string. Returns
+   * { rows, total } with `total` = pre-pagination count. See vite.config.ts
+   * fetchAuditRowsPage for the SQL-mode rationale; here we also handle the
+   * memory-mode fallback with the same filter shape.
+   */
+  const fetchAuditRowsPage = (filters) => {
+    const safe = filters || {};
+    const from = typeof safe.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(safe.from) ? safe.from : '';
+    const to = typeof safe.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(safe.to) ? safe.to : '';
+    const voucherTypes = Array.isArray(safe.voucherTypes) ? safe.voucherTypes.filter(Boolean) : [];
+    const ledgers = Array.isArray(safe.ledgers) ? safe.ledgers.filter(Boolean) : [];
+    const parties = Array.isArray(safe.parties) ? safe.parties.filter(Boolean) : [];
+    const gstin = typeof safe.gstin === 'string' && safe.gstin.trim() ? safe.gstin.trim() : '';
+    const search = typeof safe.search === 'string' && safe.search.trim() ? safe.search.trim() : '';
+    const limit = Math.max(0, Number(safe.limit) || 0);
+    const offset = Math.max(0, Number(safe.offset) || 0);
+
+    if (!sqliteAvailable) {
+      // Memory fallback: same filter semantics, but JS-side. Slow but
+      // functionally identical so the client doesn't have to branch.
+      let pool = memoryRows;
+      if (from) pool = pool.filter((r) => toSafeText(r.date) >= from);
+      if (to) pool = pool.filter((r) => toSafeText(r.date) <= to);
+      if (voucherTypes.length) {
+        const set = new Set(voucherTypes);
+        pool = pool.filter((r) => set.has(toSafeText(r.voucher_type)));
+      }
+      if (ledgers.length) {
+        const set = new Set(ledgers);
+        pool = pool.filter((r) => set.has(toSafeText(r.ledger || r.Ledger)));
+      }
+      if (parties.length) {
+        const set = new Set(parties);
+        pool = pool.filter((r) => set.has(toSafeText(r.party_name)));
+      }
+      if (gstin) pool = pool.filter((r) => toSafeText(r.gstin) === gstin);
+      if (search) {
+        const needle = search.toLowerCase();
+        pool = pool.filter((r) =>
+          toSafeText(r.voucher_number).toLowerCase().includes(needle) ||
+          toSafeText(r.narration).toLowerCase().includes(needle) ||
+          toSafeText(r.party_name).toLowerCase().includes(needle)
+        );
+      }
+      const total = pool.length;
+      pool = pool.slice().sort((a, b) => toSafeText(a.date).localeCompare(toSafeText(b.date)) ||
+        toSafeText(a.voucher_number).localeCompare(toSafeText(b.voucher_number)));
+      const sliced = limit > 0 ? pool.slice(offset, offset + limit) : pool.slice(offset);
+      return { rows: sliced, total };
+    }
+
+    const db = getAuditDb();
+    const where = [];
+    const params = [];
+    if (from) { where.push('date >= ?'); params.push(from); }
+    if (to) { where.push('date <= ?'); params.push(to); }
+    if (voucherTypes.length) {
+      where.push(`voucher_type IN (${voucherTypes.map(() => '?').join(', ')})`);
+      params.push(...voucherTypes);
+    }
+    if (ledgers.length) {
+      where.push(`ledger IN (${ledgers.map(() => '?').join(', ')})`);
+      params.push(...ledgers);
+    }
+    if (parties.length) {
+      where.push(`party_name IN (${parties.map(() => '?').join(', ')})`);
+      params.push(...parties);
+    }
+    if (gstin) { where.push('gstin = ?'); params.push(gstin); }
+    if (search) {
+      where.push('(voucher_number LIKE ? OR narration LIKE ? OR party_name LIKE ?)');
+      const term = `%${search}%`;
+      params.push(term, term, term);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const total = Number(db.prepare(`SELECT COUNT(*) AS c FROM ledger_entries ${whereSql}`).get(...params)?.c || 0);
+    const limitClause = limit > 0 ? ` LIMIT ${limit} OFFSET ${offset}` : '';
+    const rows = db.prepare(`
+      SELECT guid, date, voucher_type, voucher_number, invoice_number, reference_number, narration,
+             party_name, gstin, ledger AS Ledger, amount, group_name AS "Group",
+             opening_balance, closing_balance, tally_parent AS TallyParent, tally_primary AS TallyPrimary,
+             is_revenue, is_accounting_voucher, is_master_ledger
+      FROM ledger_entries
+      ${whereSql}
+      ORDER BY date ASC, voucher_number ASC, id ASC
+      ${limitClause}
+    `).all(...params);
+    return { rows, total };
+  };
+
   const getAuditSummary = () => {
     if (!sqliteAvailable) return summarizeRowsArray(memoryRows);
     const db = getAuditDb();
@@ -2381,7 +2473,37 @@ const createBackendServer = async (options) => {
       return true;
     }
     if (req.method === 'GET' && pathname === '/api/data/rows') {
-      sendJson(res, 200, { ok: true, rows: fetchAuditRows() });
+      // Bare /api/data/rows preserves the legacy "give me everything"
+      // behaviour for the in-memory fallback path. With any query string,
+      // we run the indexed paginated query.
+      const queryStart = (req.url || '').indexOf('?');
+      const sp = queryStart >= 0
+        ? new URLSearchParams((req.url || '').slice(queryStart + 1))
+        : new URLSearchParams();
+      if (sp.toString().length === 0) {
+        sendJson(res, 200, { ok: true, rows: fetchAuditRows() });
+        return true;
+      }
+      const csv = (key) =>
+        sp.getAll(key).flatMap((v) => v.split(',').map((s) => s.trim()).filter(Boolean));
+      const page = fetchAuditRowsPage({
+        from: sp.get('from') || '',
+        to: sp.get('to') || '',
+        voucherTypes: csv('voucherType'),
+        ledgers: csv('ledger'),
+        parties: csv('party'),
+        gstin: sp.get('gstin') || '',
+        search: sp.get('search') || '',
+        limit: Number(sp.get('limit') || 0),
+        offset: Number(sp.get('offset') || 0),
+      });
+      sendJson(res, 200, {
+        ok: true,
+        rows: page.rows,
+        total: page.total,
+        limit: Number(sp.get('limit') || 0),
+        offset: Number(sp.get('offset') || 0),
+      });
       return true;
     }
     if (req.method === 'GET' && pathname === '/api/analytics/months') {
