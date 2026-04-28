@@ -11,12 +11,25 @@ const {
   exportXlsx,
 } = require('./services/gstr2bReconciliation.cjs');
 
-let DatabaseSync = null;
+// better-sqlite3 is a CommonJS native addon. If the native binary is missing
+// for the current platform/Node version, fall back to the in-memory JS path
+// (memoryRows etc.) so the app still launches; the user gets a SQL-disabled
+// experience rather than a hard crash.
+let Database = null;
 try {
-  ({ DatabaseSync } = require('node:sqlite'));
+  Database = require('better-sqlite3');
 } catch {
-  DatabaseSync = null;
+  Database = null;
 }
+
+const {
+  resolveAuditDbPath,
+  applyAuditPragmas,
+  initializeAuditSchema,
+  hashRows,
+  getLastImportHash,
+  recordImport,
+} = require('./services/auditDbCore.cjs');
 
 const REQUIRED_TABLES = ['trn_accounting', 'trn_voucher'];
 const OPTIONAL_TABLES = ['mst_ledger', 'mst_group'];
@@ -114,94 +127,9 @@ const createBackendServer = async (options) => {
     if (!fs.existsSync(tempDataDir)) fs.mkdirSync(tempDataDir, { recursive: true });
   };
 
-  const auditSchemaSql = `
-    CREATE TABLE IF NOT EXISTS ledger_entries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      guid TEXT,
-      date TEXT,
-      voucher_type TEXT,
-      voucher_number TEXT,
-      invoice_number TEXT,
-      reference_number TEXT,
-      narration TEXT,
-      party_name TEXT,
-      gstin TEXT,
-      ledger TEXT,
-      amount REAL,
-      group_name TEXT,
-      opening_balance REAL,
-      closing_balance REAL,
-      tally_parent TEXT,
-      tally_primary TEXT,
-      is_revenue INTEGER,
-      is_accounting_voucher INTEGER,
-      is_master_ledger INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS idx_ledger_entries_date ON ledger_entries(date);
-    CREATE INDEX IF NOT EXISTS idx_ledger_entries_voucher ON ledger_entries(voucher_number);
-    CREATE INDEX IF NOT EXISTS idx_ledger_entries_ledger ON ledger_entries(ledger);
-    CREATE INDEX IF NOT EXISTS idx_ledger_entries_primary ON ledger_entries(tally_primary);
-    CREATE INDEX IF NOT EXISTS idx_ledger_entries_parent ON ledger_entries(tally_parent);
-    CREATE INDEX IF NOT EXISTS idx_ledger_entries_voucher_date_type ON ledger_entries(voucher_number, date, voucher_type);
-    CREATE INDEX IF NOT EXISTS idx_ledger_entries_ledger_primary ON ledger_entries(ledger, tally_primary);
-
-    CREATE TABLE IF NOT EXISTS gstr2b_imports (
-      import_id TEXT PRIMARY KEY,
-      source_name TEXT,
-      uploaded_at TEXT,
-      rtnprd TEXT,
-      entity_gstin TEXT,
-      version TEXT,
-      generated_at TEXT,
-      count_total INTEGER,
-      count_b2b INTEGER,
-      count_cdnr INTEGER,
-      count_b2ba INTEGER,
-      totals_json TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_gstr2b_imports_uploaded_at ON gstr2b_imports(uploaded_at);
-
-    CREATE TABLE IF NOT EXISTS gstr2b_import_rows (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      import_id TEXT,
-      section TEXT,
-      supplier_gstin TEXT,
-      supplier_name TEXT,
-      invoice_no TEXT,
-      invoice_no_norm TEXT,
-      invoice_date TEXT,
-      taxable REAL,
-      igst REAL,
-      cgst REAL,
-      sgst REAL,
-      cess REAL,
-      total_tax REAL,
-      total_value REAL,
-      reverse_charge INTEGER,
-      type TEXT,
-      itc_availability TEXT,
-      pos TEXT,
-      entity_gstin TEXT,
-      branch TEXT,
-      is_amended INTEGER,
-      is_isd INTEGER,
-      raw_json TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_gstr2b_rows_import_id ON gstr2b_import_rows(import_id);
-    CREATE INDEX IF NOT EXISTS idx_gstr2b_rows_supplier_invoice ON gstr2b_import_rows(supplier_gstin, invoice_no_norm, invoice_date);
-
-    CREATE TABLE IF NOT EXISTS gstr2b_reco_runs (
-      run_id TEXT PRIMARY KEY,
-      import_id TEXT,
-      created_at TEXT,
-      scope_month TEXT,
-      scope_entity_gstin TEXT,
-      scope_branch TEXT,
-      config_json TEXT,
-      result_json TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_gstr2b_runs_created_at ON gstr2b_reco_runs(created_at);
-  `;
+  // Schema, PRAGMAs, and indexes are owned by ./services/auditDbCore.cjs.
+  // Imported at the top of this file; both the dev server (vite.config.ts)
+  // and this backend share the same definition.
 
   let auditDb = null;
   let memoryRows = [];
@@ -209,21 +137,19 @@ const createBackendServer = async (options) => {
   let memoryGstr2bImports = [];
   let memoryGstr2bImportRows = [];
   let memoryGstr2bRuns = [];
-  const sqliteAvailable = !!DatabaseSync;
-
-  const initializeAuditSchema = (db) => {
-    db.exec(auditSchemaSql);
-    try {
-      db.exec('ALTER TABLE ledger_entries ADD COLUMN is_master_ledger INTEGER DEFAULT 0;');
-    } catch {
-      // ignore duplicate column
-    }
-  };
+  // If the better-sqlite3 native binary isn't available for this platform/Node
+  // combo, the backend falls through to in-memory JS arrays. That path is
+  // slow but keeps the app functional.
+  const sqliteAvailable = !!Database;
 
   const getAuditDb = () => {
     if (!sqliteAvailable) return null;
     if (auditDb) return auditDb;
-    auditDb = new DatabaseSync(':memory:');
+    // Persist to ~/.finanalyzer/audit.sqlite so the data survives server
+    // restarts and is shared with the vite dev server (same file path).
+    const dbPath = resolveAuditDbPath();
+    auditDb = new Database(dbPath);
+    applyAuditPragmas(auditDb);
     initializeAuditSchema(auditDb);
     return auditDb;
   };
@@ -435,16 +361,28 @@ const createBackendServer = async (options) => {
       return { insertedRows: loadedRows, summary: getAuditSummary() };
     }
     const db = getAuditDb();
-    db.exec('DELETE FROM ledger_entries;');
-    db.exec('BEGIN;');
-    let inserted = 0;
-    try {
-      inserted = insertAuditRows(db, rows || []);
-      db.exec('COMMIT;');
-    } catch (err) {
-      db.exec('ROLLBACK;');
-      throw err;
+
+    // Hash-skip: identical re-imports return immediately. The DB is persisted
+    // to disk so the previous data is still there.
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const sourceHash = hashRows(safeRows);
+    const lastImport = getLastImportHash(db);
+    if (lastImport && lastImport.source_hash === sourceHash) {
+      const summary = getAuditSummary();
+      loadedRows = summary.totalRows;
+      return { insertedRows: summary.totalRows, summary };
     }
+
+    // db.transaction(fn) is the better-sqlite3 fast path. It wraps DELETE +
+    // bulk INSERT in a single savepoint; on throw it rolls back automatically.
+    const runImport = db.transaction((batch) => {
+      db.exec('DELETE FROM ledger_entries;');
+      const n = insertAuditRows(db, batch);
+      recordImport(db, sourceHash, n);
+      return n;
+    });
+
+    const inserted = runImport(safeRows);
     loadedRows = inserted;
     return { insertedRows: inserted, summary: getAuditSummary() };
   };
@@ -1387,8 +1325,9 @@ const createBackendServer = async (options) => {
     }
 
     const db = getAuditDb();
-    db.exec('BEGIN;');
-    try {
+    // Single transaction wraps the import header insert plus all row inserts.
+    // Better-sqlite3 rolls back automatically on throw inside the transaction fn.
+    const persistImport = db.transaction(() => {
       db.prepare(`
         INSERT INTO gstr2b_imports (
           import_id, source_name, uploaded_at, rtnprd, entity_gstin, version, generated_at,
@@ -1417,7 +1356,7 @@ const createBackendServer = async (options) => {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
-      rows.forEach((row) => {
+      for (const row of rows) {
         stmt.run(
           importId,
           toSafeText(row.section),
@@ -1443,13 +1382,11 @@ const createBackendServer = async (options) => {
           row.isISD ? 1 : 0,
           toJsonText(row.raw || {})
         );
-      });
-      db.exec('COMMIT;');
-      return importRecord;
-    } catch (error) {
-      db.exec('ROLLBACK;');
-      throw error;
-    }
+      }
+    });
+
+    persistImport();
+    return importRecord;
   };
 
   const listGstr2bImports = () => {
@@ -1571,16 +1508,12 @@ const createBackendServer = async (options) => {
       const importsCleared = countValue('SELECT COUNT(*) AS cnt FROM gstr2b_imports');
       const rowsCleared = countValue('SELECT COUNT(*) AS cnt FROM gstr2b_import_rows');
       const runsCleared = countValue('SELECT COUNT(*) AS cnt FROM gstr2b_reco_runs');
-      db.exec('BEGIN;');
-      try {
+      const clearAll = db.transaction(() => {
         db.exec('DELETE FROM gstr2b_import_rows;');
         db.exec('DELETE FROM gstr2b_imports;');
         db.exec('DELETE FROM gstr2b_reco_runs;');
-        db.exec('COMMIT;');
-      } catch (error) {
-        db.exec('ROLLBACK;');
-        throw error;
-      }
+      });
+      clearAll();
       return { importsCleared, rowsCleared, runsCleared, clearedAll: true };
     }
 
@@ -1598,16 +1531,12 @@ const createBackendServer = async (options) => {
       normalizedImportIds
     );
 
-    db.exec('BEGIN;');
-    try {
+    const clearByIds = db.transaction(() => {
       db.prepare(`DELETE FROM gstr2b_import_rows WHERE import_id IN (${placeholders})`).run(...normalizedImportIds);
       db.prepare(`DELETE FROM gstr2b_imports WHERE import_id IN (${placeholders})`).run(...normalizedImportIds);
       db.prepare(`DELETE FROM gstr2b_reco_runs WHERE import_id IN (${placeholders})`).run(...normalizedImportIds);
-      db.exec('COMMIT;');
-    } catch (error) {
-      db.exec('ROLLBACK;');
-      throw error;
-    }
+    });
+    clearByIds();
 
     return { importsCleared, rowsCleared, runsCleared, clearedAll: false };
   };
@@ -1746,16 +1675,15 @@ const createBackendServer = async (options) => {
 
     ensureTempDataDir();
     const filePath = path.join(tempDataDir, `export-${Date.now()}.sqlite`);
-    const db = new DatabaseSync(filePath);
+    const db = new Database(filePath);
+    applyAuditPragmas(db);
     initializeAuditSchema(db);
-    db.exec('BEGIN;');
-    try {
+    const runExport = db.transaction(() => {
       insertAuditRows(db, rows);
       buildReferenceCollectionsForExport(db);
-      db.exec('COMMIT;');
-    } catch (err) {
-      db.exec('ROLLBACK;');
-      throw err;
+    });
+    try {
+      runExport();
     } finally {
       db.close?.();
     }
@@ -1782,7 +1710,8 @@ const createBackendServer = async (options) => {
 
     let srcDb = null;
     try {
-      srcDb = new DatabaseSync(filePath);
+      // User-provided TSF file: open read-only.
+      srcDb = new Database(filePath, { readonly: true });
       const exists = srcDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_entries'").get();
       if (!exists?.name) throw new Error('Invalid Tally source file: ledger_entries table not found.');
       const col = srcDb.prepare("SELECT name FROM pragma_table_info('ledger_entries') WHERE name = 'is_master_ledger'").get();
@@ -1812,7 +1741,7 @@ const createBackendServer = async (options) => {
 
     let srcDb = null;
     try {
-      srcDb = new DatabaseSync(filePath);
+      srcDb = new Database(filePath, { readonly: true });
       const exists = srcDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_entries'").get();
       if (!exists?.name) throw new Error('Invalid Tally source file: ledger_entries table not found.');
 
