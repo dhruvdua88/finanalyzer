@@ -196,6 +196,18 @@ const App: React.FC = () => {
         gstLedgers: [],
         rcmLedgers: [],
       },
+      relatedPartyProfile: {
+        parties: {},
+        ledgerTxType: {},
+        thresholds: {
+          materialityRupees: 1_000_000,
+          yearEndDays: 30,
+          roundAmountUnit: 100_000,
+          section188TurnoverPct: 10,
+          annualTurnover: 0,
+        },
+        approvals: {},
+      },
       tdsThresholdConfig: { enabled: false, sectionMappings: [] },
       tdsAnnotations: [],
     };
@@ -210,6 +222,14 @@ const App: React.FC = () => {
           partyMatrixProfile: {
             ...defaults.partyMatrixProfile,
             ...(parsed?.partyMatrixProfile || {}),
+          },
+          relatedPartyProfile: {
+            ...defaults.relatedPartyProfile!,
+            ...(parsed?.relatedPartyProfile || {}),
+            thresholds: {
+              ...defaults.relatedPartyProfile!.thresholds,
+              ...((parsed?.relatedPartyProfile?.thresholds) || {}),
+            },
           },
           tdsThresholdConfig: {
             ...defaults.tdsThresholdConfig,
@@ -354,6 +374,13 @@ const App: React.FC = () => {
         ...prev.partyMatrixProfile,
         ...(newSettings.partyMatrixProfile || {}),
       },
+      // RelatedPartyProfile is replaced wholesale (not deep-merged) when
+      // the module emits an update — its inner shape (parties dict, ledger
+      // overrides, approvals dict) makes deep merge ambiguous.
+      relatedPartyProfile:
+        newSettings.relatedPartyProfile !== undefined
+          ? newSettings.relatedPartyProfile
+          : prev.relatedPartyProfile,
     }));
   };
 
@@ -761,8 +788,8 @@ const App: React.FC = () => {
               {activeModule === AnalysisType.RELATED_PARTY_ANALYSIS && (
                 <RelatedPartyAnalysis
                   data={transactionData}
-                  externalSelectedParties={settings.relatedParties}
-                  onPartiesUpdate={(l) => updateSettings({ relatedParties: l })}
+                  externalProfile={settings.relatedPartyProfile}
+                  onProfileUpdate={(profile) => updateSettings({ relatedPartyProfile: profile })}
                 />
               )}
               {activeModule === AnalysisType.GST_LEDGER_SUMMARY && (

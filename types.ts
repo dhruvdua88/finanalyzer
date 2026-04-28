@@ -70,6 +70,7 @@ export interface AuditSettings {
   relatedParties: string[];
   gstLedgerSummary: string[];
   partyMatrixProfile: PartyMatrixProfile;
+  relatedPartyProfile?: RelatedPartyProfile;
   tdsThresholdConfig: TDSThresholdConfig;
   tdsAnnotations: AuditAnnotation[];
 }
@@ -79,6 +80,98 @@ export interface PartyMatrixProfile {
   tdsLedgers: string[];
   gstLedgers: string[];
   rcmLedgers: string[];
+}
+
+// ── Related Party (AS-18) ────────────────────────────────────────────────────
+//
+// AS-18 (Indian GAAP) recognises six relationship buckets. We add a generic
+// 'other-rp' for parties the user marks as related but doesn't want to
+// commit to a specific category. Order matters — UI sorts use this order
+// to put the most material (Holding/Subsidiary) at the top of the matrix.
+export type RPRelationshipCategory =
+  | 'holding'                        // Enterprise that controls reporting entity
+  | 'subsidiary'                     // Reporting entity controls
+  | 'fellow-subsidiary'              // Same parent
+  | 'associate-jv'                   // Significant influence / joint control
+  | 'kmp'                            // Key Managerial Personnel — directors, CFO, MD, CEO
+  | 'kmp-relative'                   // Relative of KMP — spouse, children, parents, siblings
+  | 'kmp-enterprise'                 // Enterprise where KMP/relative has significant influence
+  | 'individual-significant-influence' // Individual (not KMP) with control or SI
+  | 'other-rp';                      // Other related parties not fitting above
+
+// AS-18 transaction categories. Para 23 of AS-18 lists these explicitly as
+// the disclosure breakdown the auditor must produce. We keep the standard
+// names so the Excel export can carry the exact wording into the note.
+export type RPTransactionType =
+  | 'sale-goods'
+  | 'sale-services'
+  | 'purchase-goods'
+  | 'purchase-services'
+  | 'rendering-services'
+  | 'receiving-services'
+  | 'agency-arrangements'
+  | 'leasing-hire-purchase'
+  | 'rd-transfer'
+  | 'license-agreements'
+  | 'finance-given'                  // loans / equity contributions GIVEN to RP
+  | 'finance-received'               // loans / equity contributions RECEIVED from RP
+  | 'interest-paid'
+  | 'interest-received'
+  | 'rent-paid'
+  | 'rent-received'
+  | 'remuneration'                   // Director / KMP compensation
+  | 'reimbursement'
+  | 'guarantees-given'
+  | 'guarantees-received'
+  | 'management-contracts'
+  | 'dividend-paid'
+  | 'dividend-received'
+  | 'other';
+
+export interface RPPartyTag {
+  category: RPRelationshipCategory;
+  // Free-text descriptor that goes straight into the AS-18 note. E.g.
+  // "Mrs. Priya Sharma — wife of Mr. Anil Sharma (Director)" or
+  // "ABC Industries Pvt Ltd — significantly influenced by Director Mr. X".
+  notes?: string;
+  // User flag — overrides the auto-detected materiality classification.
+  isMaterial?: boolean;
+}
+
+export interface RPApprovalRecord {
+  // Key is `${voucher_number}|${date}`.
+  boardRef?: string;                  // resolution date / number
+  shRef?: string;                     // shareholder approval ref (Sec 188)
+  approved: boolean;
+  notes?: string;
+}
+
+export interface RelatedPartyProfile {
+  // Per-party relationship classification. Empty entry = not yet tagged.
+  parties: Record<string, RPPartyTag>;
+
+  // Per-ledger override: the user can pin a specific counter-ledger to an
+  // AS-18 transaction type if the auto-classifier gets it wrong (e.g.,
+  // an oddly-named "Sundry Income" ledger that's actually rent received).
+  ledgerTxType: Record<string, RPTransactionType>;
+
+  // Audit thresholds. All optional; sensible defaults applied in the worker
+  // when missing.
+  thresholds: {
+    materialityRupees: number;        // single-tx flag threshold (default ₹10L)
+    yearEndDays: number;              // window for "year-end concentration" (default 30)
+    roundAmountUnit: number;          // round-amount detection (default ₹1L)
+    section188TurnoverPct: number;    // Sec 188 SH-approval trigger (default 10%)
+    annualTurnover: number;           // entity turnover for Sec 188 percent maths
+  };
+
+  // Per-voucher approval log (Section 188 / Companies Act 2013 trail).
+  approvals: Record<string, RPApprovalRecord>;
+
+  // Comparative previous-year figures, manually entered (since prior-year
+  // dataset may not be in the current import). Indexed by relationship ×
+  // transaction type. Optional.
+  previousYearMatrix?: Record<string, Record<string, number>>;
 }
 
 export interface VoucherGroup {
