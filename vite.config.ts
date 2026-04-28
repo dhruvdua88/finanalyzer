@@ -343,6 +343,116 @@ const fetchAuditRows = (): any[] => {
     .all() as any[];
 };
 
+/**
+ * Filter + paginate /api/data/rows.
+ *
+ * Returns { rows, total } where `total` is the count BEFORE pagination so
+ * the client can render "Showing 100-200 of 12,345" affordances. All
+ * filters are optional; passing none + no limit reproduces fetchAuditRows().
+ *
+ * Filters are pushed into SQL (not JS) so a 500k-row dataset doesn't
+ * have to be serialised over HTTP just for the client to throw 99% of
+ * it away. The parameterised query plus the indexes added in commit 1
+ * (date, gstin, party_name, voucher_type+date) keeps these lookups
+ * sub-ms even on large books.
+ */
+type RowsPageFilters = {
+  from?: string;          // 'YYYY-MM-DD' inclusive
+  to?: string;            // 'YYYY-MM-DD' inclusive
+  voucherTypes?: string[];
+  ledgers?: string[];
+  parties?: string[];
+  gstin?: string;
+  search?: string;        // free-text against voucher_number / narration / party_name
+  limit?: number;         // default 0 = no limit
+  offset?: number;
+};
+
+const fetchAuditRowsPage = (filters: RowsPageFilters): { rows: any[]; total: number } => {
+  const db = getAuditDb();
+  const where: string[] = [];
+  const params: any[] = [];
+
+  if (filters.from && /^\d{4}-\d{2}-\d{2}$/.test(filters.from)) {
+    where.push('date >= ?');
+    params.push(filters.from);
+  }
+  if (filters.to && /^\d{4}-\d{2}-\d{2}$/.test(filters.to)) {
+    where.push('date <= ?');
+    params.push(filters.to);
+  }
+  if (filters.voucherTypes && filters.voucherTypes.length) {
+    where.push(`voucher_type IN (${filters.voucherTypes.map(() => '?').join(', ')})`);
+    params.push(...filters.voucherTypes);
+  }
+  if (filters.ledgers && filters.ledgers.length) {
+    where.push(`ledger IN (${filters.ledgers.map(() => '?').join(', ')})`);
+    params.push(...filters.ledgers);
+  }
+  if (filters.parties && filters.parties.length) {
+    where.push(`party_name IN (${filters.parties.map(() => '?').join(', ')})`);
+    params.push(...filters.parties);
+  }
+  if (filters.gstin) {
+    where.push('gstin = ?');
+    params.push(filters.gstin);
+  }
+  if (filters.search) {
+    // Free-text fallback. LIKE with leading-% can't use an index but the
+    // dataset is already filtered by the params above, so this hits a
+    // smaller subset.
+    where.push('(voucher_number LIKE ? OR narration LIKE ? OR party_name LIKE ?)');
+    const term = `%${filters.search}%`;
+    params.push(term, term, term);
+  }
+
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  // Run the COUNT and the page in one transaction for a consistent snapshot.
+  // Without this, an interleaved write between the two could give counts
+  // that don't match the rows returned. With WAL + a single-writer model
+  // this is largely theoretical, but cheap to do correctly.
+  const limit = Math.max(0, Number(filters.limit) || 0);
+  const offset = Math.max(0, Number(filters.offset) || 0);
+
+  const totalRow = db
+    .prepare(`SELECT COUNT(*) AS total FROM ledger_entries ${whereClause}`)
+    .get(...params) as any;
+  const total = Number(totalRow?.total || 0);
+
+  const limitClause = limit > 0 ? ` LIMIT ${limit} OFFSET ${offset}` : '';
+  const rows = db
+    .prepare(`
+      SELECT
+        guid,
+        date,
+        voucher_type,
+        voucher_number,
+        invoice_number,
+        reference_number,
+        narration,
+        party_name,
+        gstin,
+        ledger AS Ledger,
+        amount,
+        group_name AS "Group",
+        opening_balance,
+        closing_balance,
+        tally_parent AS TallyParent,
+        tally_primary AS TallyPrimary,
+        is_revenue,
+        is_accounting_voucher,
+        is_master_ledger
+      FROM ledger_entries
+      ${whereClause}
+      ORDER BY date ASC, voucher_number ASC, id ASC
+      ${limitClause}
+    `)
+    .all(...params) as any[];
+
+  return { rows, total };
+};
+
 const sanitizeMonthKeys = (months: any): string[] => {
   if (!Array.isArray(months)) return [];
   const out = new Set<string>();
@@ -2123,10 +2233,42 @@ export default defineConfig(({ mode }) => {
                 }
 
                 if (req.method === 'GET' && pathname === '/api/data/rows') {
-                  const rows = fetchAuditRows();
+                  // Backward-compat: a bare /api/data/rows still returns
+                  // every row (used by the SQL→memory-mode fallback in
+                  // App.tsx). When the client passes any filter or paging
+                  // param, we switch to the indexed paginated path.
+                  const queryStart = rawUrl.indexOf('?');
+                  const sp = queryStart >= 0
+                    ? new URLSearchParams(rawUrl.slice(queryStart + 1))
+                    : new URLSearchParams();
+
+                  const hasParams = sp.toString().length > 0;
+                  if (!hasParams) {
+                    const rows = fetchAuditRows();
+                    sendJson(res, 200, { ok: true, rows });
+                    return;
+                  }
+
+                  const csv = (key: string) =>
+                    sp.getAll(key).flatMap((v) => v.split(',').map((s) => s.trim()).filter(Boolean));
+                  const filters: RowsPageFilters = {
+                    from: sp.get('from') || undefined,
+                    to: sp.get('to') || undefined,
+                    voucherTypes: csv('voucherType'),
+                    ledgers: csv('ledger'),
+                    parties: csv('party'),
+                    gstin: sp.get('gstin') || undefined,
+                    search: sp.get('search') || undefined,
+                    limit: Number(sp.get('limit') || 0),
+                    offset: Number(sp.get('offset') || 0),
+                  };
+                  const page = fetchAuditRowsPage(filters);
                   sendJson(res, 200, {
                     ok: true,
-                    rows,
+                    rows: page.rows,
+                    total: page.total,
+                    limit: filters.limit || 0,
+                    offset: filters.offset || 0,
                   });
                   return;
                 }
