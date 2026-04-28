@@ -1,4 +1,5 @@
 const XLSX = require('xlsx-js-style');
+const crypto = require('node:crypto');
 
 const STATUS = {
   MATCH: 'MATCH',
@@ -1094,7 +1095,7 @@ const finiteDayDiff = (d1, d2) => {
   return Number.isFinite(diff) ? diff : 999999;
 };
 
-const reconcile = (booksDocsRaw, portalDocsRaw, options = {}) => {
+const _reconcileImpl = (booksDocsRaw, portalDocsRaw, options = {}) => {
   const config = {
     enableDateTolerance: options?.enableDateTolerance !== false,
     dateToleranceDays: Number.isFinite(Number(options?.dateToleranceDays)) ? Number(options?.dateToleranceDays) : 2,
@@ -1266,6 +1267,73 @@ const reconcile = (booksDocsRaw, portalDocsRaw, options = {}) => {
     invoiceMismatches,
     actionList,
   };
+};
+
+/**
+ * Memoised wrapper around _reconcileImpl.
+ *
+ * Reconciliation is a pure function of (books, portal, options) — same
+ * inputs always produce the same output. The work itself (~hundreds of ms
+ * on large datasets, dominated by hash-map construction over thousands of
+ * docs) is wasted when the user re-invokes with identical inputs (e.g.
+ * after toggling an unrelated UI panel that triggers a re-render).
+ *
+ * Cache strategy:
+ *   - Key: SHA-256 of a stable JSON encoding of all three arguments.
+ *     Includes scope, tolerances, all flags. Different scope → different key.
+ *   - LRU with max RECONCILE_CACHE_LIMIT entries. On overflow, evict oldest.
+ *   - Result is returned by reference. Callers MUST treat as read-only;
+ *     deep-cloning every cached result would defeat the purpose.
+ *
+ * Callers can opt out per-call by setting `options.bypassCache = true`.
+ */
+const RECONCILE_CACHE_LIMIT = 5;
+const _reconcileCache = new Map();
+
+const _reconcileCacheKey = (booksDocsRaw, portalDocsRaw, options) => {
+  // JSON.stringify is sufficient for hashing here: the inputs are plain
+  // objects produced by the parsers, no Date instances or circular refs.
+  // We hash the JSON rather than using it directly so the cache key
+  // doesn't grow with input size.
+  const hash = crypto.createHash('sha256');
+  hash.update(JSON.stringify(booksDocsRaw || []));
+  hash.update('|');
+  hash.update(JSON.stringify(portalDocsRaw || []));
+  hash.update('|');
+  // Strip bypassCache from the keyed options so toggling it doesn't
+  // pointlessly fragment the cache.
+  const { bypassCache: _ignore, ...keyedOptions } = options || {};
+  hash.update(JSON.stringify(keyedOptions));
+  return hash.digest('hex');
+};
+
+const reconcile = (booksDocsRaw, portalDocsRaw, options = {}) => {
+  if (options?.bypassCache === true) {
+    return _reconcileImpl(booksDocsRaw, portalDocsRaw, options);
+  }
+
+  const key = _reconcileCacheKey(booksDocsRaw, portalDocsRaw, options);
+  const cached = _reconcileCache.get(key);
+  if (cached) {
+    // Touch to refresh LRU position (Map preserves insertion order).
+    _reconcileCache.delete(key);
+    _reconcileCache.set(key, cached);
+    return cached;
+  }
+
+  const result = _reconcileImpl(booksDocsRaw, portalDocsRaw, options);
+  _reconcileCache.set(key, result);
+  // Evict oldest entries on overflow.
+  while (_reconcileCache.size > RECONCILE_CACHE_LIMIT) {
+    const oldestKey = _reconcileCache.keys().next().value;
+    _reconcileCache.delete(oldestKey);
+  }
+  return result;
+};
+
+/** Test-only: reset the LRU cache. Used by reconciliation.test.cjs. */
+const _resetReconcileCache = () => {
+  _reconcileCache.clear();
 };
 
 const exportXlsx = (resultPayload) => {
@@ -1671,6 +1739,7 @@ module.exports = {
   reconcile,
   generateSummary,
   exportXlsx,
+  _resetReconcileCache,
   _internal: {
     parseDateToIso,
     isoToDdMmYyyy,
