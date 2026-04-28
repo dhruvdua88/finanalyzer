@@ -141,6 +141,10 @@ const stageRuntimeApp = () => {
   }
 
   const rootPackage = JSON.parse(fs.readFileSync(path.resolve(ROOT_DIR, 'package.json'), 'utf8'));
+  // Runtime deps for the SEA-bundled backend. better-sqlite3 is a native
+  // addon: `npm install --omit=dev` below pulls the prebuilt .node binary
+  // for the platform/Node-ABI we're packaging on. Ship for the same
+  // platform you build on, or build inside CI matching the target.
   const runtimePackage = {
     name: 'finanalyzer-runtime',
     private: true,
@@ -149,6 +153,7 @@ const stageRuntimeApp = () => {
     dependencies: {
       xlsx: rootPackage?.dependencies?.xlsx || '^0.18.5',
       'xlsx-js-style': rootPackage?.dependencies?.['xlsx-js-style'] || '^1.2.0',
+      'better-sqlite3': rootPackage?.dependencies?.['better-sqlite3'] || '^12.4.1',
     },
   };
 
