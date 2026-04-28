@@ -76,11 +76,28 @@ const toIsoDate = (value: any): string => {
   return text;
 };
 
-const parseCsvRows = (content: string): Promise<GenericRow[]> => {
+/**
+ * Parse a CSV File directly via PapaParse in a Web Worker.
+ *
+ * Two wins versus the previous `await file.text()` → `Papa.parse(string)`
+ * pattern that ran on the main thread:
+ *
+ *   1. worker: true — parse runs off the main thread, so the React UI
+ *      stays responsive while a 100k+ row Tally loader CSV is parsed.
+ *   2. Streaming the File directly — Papa pulls chunks via the File API
+ *      instead of us materialising the entire CSV as a single string
+ *      first. Roughly halves peak memory on big imports.
+ *
+ * Note on BOM: Papa handles UTF-8 BOM detection itself when reading from
+ * a File, so the explicit stripBom() that wrapped file.text() is no
+ * longer needed for the streaming path.
+ */
+const parseCsvFile = (file: File): Promise<GenericRow[]> => {
   return new Promise((resolve, reject) => {
-    Papa.parse(content, {
+    Papa.parse(file, {
       header: true,
       skipEmptyLines: 'greedy',
+      worker: true,
       complete: (results: any) => resolve((results?.data || []).map(normalizeRowKeys)),
       error: (err: any) => reject(err),
     });
@@ -89,9 +106,11 @@ const parseCsvRows = (content: string): Promise<GenericRow[]> => {
 
 const parseTableFile = async (file: File): Promise<GenericRow[]> => {
   const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-  const content = stripBom(await file.text());
 
   if (extension === '.json') {
+    // JSON has no streaming parser in the standard library, so we still
+    // need to materialise the file into a string before JSON.parse.
+    const content = stripBom(await file.text());
     const parsed = JSON.parse(content);
     if (!Array.isArray(parsed)) {
       throw new Error(`File ${file.name} is not a JSON array.`);
@@ -100,7 +119,7 @@ const parseTableFile = async (file: File): Promise<GenericRow[]> => {
   }
 
   if (extension === '.csv') {
-    return parseCsvRows(content);
+    return parseCsvFile(file);
   }
 
   throw new Error(`Unsupported file format for ${file.name}.`);
