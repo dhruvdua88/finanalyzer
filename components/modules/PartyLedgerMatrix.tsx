@@ -18,6 +18,8 @@ import {
   Sparkles,
   ListChecks,
   MinusSquare,
+  ClipboardCopy,
+  FileText,
 } from 'lucide-react';
 import type {
   PartyRow,
@@ -1300,11 +1302,349 @@ const PartyLedgerMatrix: React.FC<Props> = ({ data, externalProfile, onProfileUp
       XLSX.writeFile(wb, `Party_Ledger_Matrix_${stamp}.xlsx`, { compression: true });
       setMsg('Excel exported successfully.');
       setTimeout(() => setMsg(''), 1800);
-    } catch (err) {
-      console.error(err);
-      window.alert('Excel export failed. Please retry.');
+    } catch (err: any) {
+      // Surface the actual error so failures are diagnosable instead of
+      // disappearing behind a generic "please retry" message. Shape:
+      //   "Excel export failed:\n  TypeError: ws[addr] is undefined"
+      // The full stack still lands in the dev console for deeper inspection.
+      console.error('[PartyLedgerMatrix] Excel export failed:', err);
+      const name = err?.name || 'Error';
+      const message = err?.message || String(err) || 'Unknown error';
+      const guardHint =
+        analysis.rows.length === 0
+          ? '\n\nHint: no analysis rows are loaded. Select a Tally Primary Group (and import data) before exporting.'
+          : filteredRows.length === 0
+            ? '\n\nHint: current filters yielded zero rows. Clear filters and retry.'
+            : '';
+      window.alert(`Excel export failed:\n  ${name}: ${message}${guardHint}\n\nFull stack in DevTools console.`);
     } finally {
       setExporting(false);
+    }
+  };
+
+  // ── Markdown-for-LLM export ────────────────────────────────────────────────
+  // Produces a single self-contained markdown document that can be pasted into
+  // ChatGPT / Claude / Gemini for a party-level audit review. The document
+  // carries (a) a narrative header explaining the data, (b) an embedded audit
+  // prompt covering TDS / GST / RCM, and (c) fenced CSV tables for the top
+  // parties, anomalies, and counter-ledger detail.
+  //
+  // Key design decisions:
+  //   • Per-party rows include comma-separated TDS / GST / RCM ledger NAMES
+  //     actually hit by that party — names in Tally commonly encode the TDS
+  //     section ("TDS 194C — Contractors") or GST rate ("CGST Input 18%"), so
+  //     the LLM can infer applicability without us having to guess.
+  //   • Numbers are emitted as full en-IN integers (no decimals, no Cr/L
+  //     abbreviations) — LLMs parse digits more reliably than mixed-unit.
+  //   • CSV, not Markdown tables, because fenced CSV survives ChatGPT's
+  //     table rendering and keeps rows aligned no matter how wide the content.
+  const [copyingMd, setCopyingMd] = useState<'idle' | 'copying' | 'copied'>('idle');
+
+  const buildLLMMarkdown = (): string => {
+    const rows = filteredRows;
+    const enInt = (v: number) =>
+      Math.round(Number(v) || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+    const pct1 = (v: number | null) =>
+      v === null || !Number.isFinite(v) ? '' : v.toFixed(1);
+    // CSV field escaping: wrap in quotes if contains comma, quote, or newline; escape internal quotes.
+    const csv = (v: any): string => {
+      const s = String(v ?? '');
+      if (s === '') return '';
+      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+
+    // Active filter summary
+    const activeFilters: string[] = [];
+    if (partyQ.trim()) activeFilters.push(`Search: "${partyQ.trim()}"`);
+    if (anomaly !== 'all') activeFilters.push(`Anomaly: ${anomaly}`);
+    if (counterBuckets.size > 0)
+      activeFilters.push(`Counter buckets: ${Array.from(counterBuckets).join(', ')}`);
+    const colMinActive = (Object.entries(colMin) as [string, number][])
+      .filter(([, v]) => v > 0)
+      .map(([k, v]) => `${k}≥${enInt(v)}`);
+    if (colMinActive.length) activeFilters.push(`Column thresholds: ${colMinActive.join(', ')}`);
+    if (hideZeroActivity) activeFilters.push('Hide zero-activity rows');
+
+    // Period — min/max of firstDate/lastDate across rows
+    const dates = rows.flatMap((r) => [r.firstDate, r.lastDate]).filter(Boolean).sort();
+    const periodFrom = dates[0] ? toDdMmYyyy(dates[0]) : '';
+    const periodTo = dates[dates.length - 1] ? toDdMmYyyy(dates[dates.length - 1]) : '';
+
+    // Per-party ledger-name helpers — these are the key addition: the LLM
+    // reads "TDS 194C" from the ledger NAME and infers the section.
+    const namesByBucket = (r: PartyRow, bucket: Bucket) =>
+      r.counterLedgers.filter((c) => c.bucket === bucket).map((c) => c.ledger);
+
+    // Flag helpers (reused across the brief)
+    const flagsFor = (r: PartyRow): string[] => {
+      const f: string[] = [];
+      if (tdsTagged && r.totalExpenses > 0 && r.tdsDeducted < 1) f.push('Z-TDS');
+      if (gstTagged && r.totalSales + r.totalExpenses > 0 && r.gstAmount < 1) f.push('Z-GST');
+      if (Math.abs(r.balanceGap) > 1) f.push('BAL');
+      const denom =
+        Math.abs(r.totalSales) +
+        Math.abs(r.totalPurchase) +
+        Math.abs(r.totalExpenses) +
+        Math.abs(r.others);
+      if (denom > 0 && r.others / denom > 0.25) f.push('OTH');
+      return f;
+    };
+
+    // Row activity score (used to rank top 100)
+    const activity = (r: PartyRow) =>
+      Math.abs(r.totalSales) +
+      Math.abs(r.totalPurchase) +
+      Math.abs(r.totalExpenses) +
+      Math.abs(r.tdsDeducted) +
+      Math.abs(r.gstAmount) +
+      Math.abs(r.rcmAmount);
+
+    // Top 100 by activity
+    const topN = [...rows].sort((a, b) => activity(b) - activity(a)).slice(0, 100);
+
+    // Anomalous rows (union of flags; excludes those already in top 100)
+    const topSet = new Set(topN.map((r) => r.partyName));
+    const anomalous = rows.filter((r) => !topSet.has(r.partyName) && flagsFor(r).length > 0);
+
+    const partyCsvHeader = [
+      'Party',
+      'Sales',
+      'Purchase',
+      'Expenses',
+      'TDS',
+      'TDS % Exp',
+      'GST',
+      'GST % S+E',
+      'RCM',
+      'Bank',
+      'Others',
+      'Net Balance',
+      'Vouchers',
+      'First Date',
+      'Last Date',
+      'TDS Ledgers Hit',
+      'GST Ledgers Hit',
+      'RCM Ledgers Hit',
+      'Top Counter-Ledgers',
+      'Flags',
+    ];
+
+    const topCounterLabel = (r: PartyRow) => {
+      const top = r.counterLedgers
+        .filter(
+          (c) =>
+            c.bucket === 'expense' ||
+            c.bucket === 'purchase' ||
+            c.bucket === 'sales' ||
+            c.bucket === 'others',
+        )
+        .slice(0, 3)
+        .map((c) => `${c.ledger}: ${enInt(c.amount)}`);
+      return top.join(' | ');
+    };
+
+    const partyCsvRow = (r: PartyRow): string =>
+      [
+        r.partyName,
+        enInt(r.totalSales),
+        enInt(r.totalPurchase),
+        enInt(r.totalExpenses),
+        enInt(r.tdsDeducted),
+        pct1(r.tdsExpensePct),
+        enInt(r.gstAmount),
+        pct1(r.gstSalesExpensePct),
+        enInt(r.rcmAmount),
+        enInt(r.bankAmount),
+        enInt(r.others),
+        enInt(r.netBalance),
+        r.voucherCount,
+        r.firstDate ? toDdMmYyyy(r.firstDate) : '',
+        r.lastDate ? toDdMmYyyy(r.lastDate) : '',
+        namesByBucket(r, 'tds').join(', '),
+        namesByBucket(r, 'gst').join(', '),
+        namesByBucket(r, 'rcm').join(', '),
+        topCounterLabel(r),
+        flagsFor(r).join(';'),
+      ]
+        .map(csv)
+        .join(',');
+
+    // Counter-ledger detail (top 5 non-tax-non-bank per party, amount ≥ 1000)
+    const detailHeader = ['Party', 'Counter Ledger', 'Bucket', 'Amount', 'Vouchers'];
+    const detailLines: string[] = [];
+    topN.forEach((r) => {
+      const top5 = r.counterLedgers
+        .filter(
+          (c) =>
+            (c.bucket === 'expense' ||
+              c.bucket === 'purchase' ||
+              c.bucket === 'sales' ||
+              c.bucket === 'others') &&
+            Math.abs(c.amount) >= 1000,
+        )
+        .slice(0, 5);
+      top5.forEach((c) => {
+        detailLines.push(
+          [r.partyName, c.ledger, c.bucket, enInt(c.amount), c.voucherCount]
+            .map(csv)
+            .join(','),
+        );
+      });
+    });
+
+    // ── Compose markdown ──
+    const lines: string[] = [];
+    lines.push('# Party Ledger Matrix — LLM Audit Brief');
+    lines.push('');
+    lines.push('## Context');
+    lines.push(`- Entity primary group: **${effectivePrimary || '(not selected)'}**`);
+    if (periodFrom && periodTo) lines.push(`- Period covered: ${periodFrom} → ${periodTo}`);
+    lines.push(
+      `- Parties in scope: **${rows.length.toLocaleString('en-IN')}** (universe: ${analysis.partyUniverseCount.toLocaleString('en-IN')})`,
+    );
+    lines.push(`- Top-activity parties included: ${topN.length}`);
+    lines.push(`- Anomalous parties included (outside top set): ${anomalous.length}`);
+    lines.push(
+      `- Active filters: ${activeFilters.length ? activeFilters.join(' | ') : '(none)'}`,
+    );
+    lines.push(
+      '- Amounts are in **Indian Rupees**, shown as full integers (no decimals, no Cr/L abbreviations).',
+    );
+    lines.push(
+      '- Sign convention: **Credit positive (+)**, **Debit negative (−)**. Net Balance is the closing balance from Tally master (credit-positive for creditors, debit-positive for debtors).',
+    );
+    lines.push(
+      '- Apportionment: within each voucher, counter-ledger amounts are split across parties by the party\'s share of absolute flow.',
+    );
+    lines.push('');
+    lines.push('## Ledger tags used in this run');
+    lines.push(
+      `- **TDS ledgers tagged (${tdsLedgers.length})**: ${tdsLedgers.length ? tdsLedgers.map((x) => `\`${x}\``).join(', ') : '_(none — TDS-related flags disabled)_'}`,
+    );
+    lines.push(
+      `- **GST ledgers tagged (${gstLedgers.length})**: ${gstLedgers.length ? gstLedgers.map((x) => `\`${x}\``).join(', ') : '_(none — GST-related flags disabled)_'}`,
+    );
+    lines.push(
+      `- **RCM ledgers tagged (${rcmLedgers.length})**: ${rcmLedgers.length ? rcmLedgers.map((x) => `\`${x}\``).join(', ') : '_(none)_'}`,
+    );
+    lines.push('');
+    lines.push('## How to read each row');
+    lines.push('- `Sales` / `Purchase` / `Expenses`: total amount routed through this party\'s vouchers to counter-ledgers of that bucket (apportioned).');
+    lines.push('- `TDS` / `GST` / `RCM`: apportioned tax-ledger totals on this party.');
+    lines.push('- `TDS % Exp` = TDS ÷ Expenses × 100. `GST % S+E` = GST ÷ (Sales + Expenses) × 100.');
+    lines.push('- `TDS Ledgers Hit`: the **specific TDS ledger names** hit by this party. Tally names commonly encode the section — e.g. `TDS 194C — Contractors` → Section **194C**, `TDS 194J` → **194J**, `TDS 194I` → **194I**, etc. Use these to confirm / challenge applicability.');
+    lines.push('- `GST Ledgers Hit`: specific GST ledger names — e.g. `CGST Input 18%`, `IGST Output 5%` — often encode the **rate**. Use to infer rate applied.');
+    lines.push('- `RCM Ledgers Hit`: specific RCM ledger names.');
+    lines.push('- `Top Counter-Ledgers`: top 3 non-tax non-bank ledgers hit, each with apportioned amount.');
+    lines.push('- `Flags`: `Z-TDS` (expense booked but zero TDS), `Z-GST` (taxable activity but zero GST), `BAL` (closing disagrees with movement), `OTH` (>25% activity in untagged "Others" — tag precision issue).');
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push('## Audit request — please produce');
+    lines.push('');
+    lines.push('You are acting as an Indian **Chartered Accountant / tax auditor**. Review the party-level matrix below and produce a prioritised audit punchlist. Reason from the **ledger names** (TDS / GST / RCM) in each row — they carry the section / rate signal. Keep the response concise but specific: name the party, cite the evidence in the row, and quantify the exposure in ₹.');
+    lines.push('');
+    lines.push('### 1. TDS (Sections 194C / 194J / 194H / 194I / 194A / 194Q / 194M / 194O, etc.)');
+    lines.push('- For every party with `Z-TDS` flag: infer the **most likely applicable section** from the `Top Counter-Ledgers` column (Rent → 194I, Contractor/Job Work → 194C, Professional / Technical → 194J, Commission / Brokerage → 194H, Interest → 194A, Goods > ₹50L → 194Q, E-commerce → 194O).');
+    lines.push('- For parties with non-zero TDS: cross-check `TDS Ledgers Hit` against the nature of expense. Flag **section mismatch** (e.g. contractor expense but only 194J ledger hit).');
+    lines.push('- Flag **under-deduction**: TDS < expected rate × applicable expense (2% for 194C, 10% for 194J/I, etc.). Note if the party may have given a lower-deduction certificate.');
+    lines.push('- Call out parties near the **annual threshold** (₹1,00,000 for 194C aggregate, ₹30,000 per payment, etc.) where YTD expense is close enough that a future booking will trigger applicability.');
+    lines.push('');
+    lines.push('### 2. GST');
+    lines.push('- Use `GST Ledgers Hit` to infer the rate applied (names usually contain 5, 12, 18, 28).');
+    lines.push('- For sales: flag parties with sales but **no output GST** (Z-GST on sales). List as potential missed output liability unless the supply is genuinely exempt (exports, NIL-rated).');
+    lines.push('- For expenses / purchases: flag parties with spend but **no input GST captured** — could be missed ITC, exempt supply, or unregistered vendor (then RCM).');
+    lines.push('- Flag **unusual rate combinations** — e.g. CGST but no SGST (interstate with wrong tax), or 28% on a non-luxury ledger.');
+    lines.push('');
+    lines.push('### 3. RCM (Reverse Charge)');
+    lines.push('- Identify parties where RCM likely applies but `RCM Ledgers Hit` is blank. Canonical RCM triggers:');
+    lines.push('  - GTA (Goods Transport Agency) — "transport", "freight", "GTA" in name');
+    lines.push('  - Advocate / legal services (individual lawyer or firm)');
+    lines.push('  - Director sitting fees / remuneration (non-employee)');
+    lines.push('  - Import of services (foreign vendor)');
+    lines.push('  - Rent from unregistered landlord');
+    lines.push('  - Security services from non-corporate provider');
+    lines.push('- Cross-check party name and counter-ledger name; if either signals an RCM trigger but `RCM` column is 0, flag it.');
+    lines.push('');
+    lines.push('### Output format requested');
+    lines.push('- A **prioritised punchlist** (high / medium / low risk).');
+    lines.push('- Columns: Party | Issue | Evidence | Estimated ₹ exposure | Recommended action.');
+    lines.push('- Group by TDS / GST / RCM.');
+    lines.push('- End with a one-paragraph overall assessment.');
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push(`## Table A — Top ${topN.length} parties by activity`);
+    lines.push('');
+    lines.push('```csv');
+    lines.push(partyCsvHeader.join(','));
+    topN.forEach((r) => lines.push(partyCsvRow(r)));
+    lines.push('```');
+    lines.push('');
+    if (anomalous.length > 0) {
+      lines.push(`## Table B — Additional anomalous parties (outside top ${topN.length})`);
+      lines.push('');
+      lines.push('```csv');
+      lines.push(partyCsvHeader.join(','));
+      anomalous.forEach((r) => lines.push(partyCsvRow(r)));
+      lines.push('```');
+      lines.push('');
+    }
+    if (detailLines.length > 0) {
+      lines.push('## Table C — Counter-ledger detail (top 5 per top-activity party, amount ≥ ₹1,000)');
+      lines.push('');
+      lines.push('```csv');
+      lines.push(detailHeader.join(','));
+      detailLines.forEach((l) => lines.push(l));
+      lines.push('```');
+      lines.push('');
+    }
+    lines.push('---');
+    lines.push('');
+    lines.push(
+      `_Generated from FinAnalyzer · ${toDdMmYyyy(new Date().toISOString())} · Primary group: ${effectivePrimary || '—'} · ${rows.length} parties in view._`,
+    );
+    return lines.join('\n');
+  };
+
+  const copyLLMMarkdown = async () => {
+    if (copyingMd !== 'idle') return;
+    setCopyingMd('copying');
+    try {
+      const md = buildLLMMarkdown();
+      await navigator.clipboard.writeText(md);
+      setCopyingMd('copied');
+      setMsg('LLM markdown copied to clipboard — paste into ChatGPT / Claude / Gemini.');
+      setTimeout(() => {
+        setCopyingMd('idle');
+        setMsg('');
+      }, 2400);
+    } catch (err) {
+      console.error(err);
+      setCopyingMd('idle');
+      window.alert('Copy failed. Your browser may block clipboard access — try the Download button instead.');
+    }
+  };
+
+  const downloadLLMMarkdown = () => {
+    try {
+      const md = buildLLMMarkdown();
+      const stamp = toDdMmYyyy(new Date().toISOString()).replace(/\//g, '-');
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Party_Matrix_LLM_Brief_${stamp}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setMsg('LLM markdown downloaded.');
+      setTimeout(() => setMsg(''), 1800);
+    } catch (err) {
+      console.error(err);
+      window.alert('Download failed. Please retry.');
     }
   };
 
@@ -1390,11 +1730,39 @@ const PartyLedgerMatrix: React.FC<Props> = ({ data, externalProfile, onProfileUp
             </button>
             <button
               onClick={exportExcel}
-              disabled={exporting}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 disabled:opacity-60"
+              // Block the export when there is nothing to export. Without this
+              // guard the user could click before the worker has produced any
+              // analysis rows (no primary group selected, or import not yet
+              // run) and end up looking at a generic "export failed" message.
+              disabled={exporting || analysis.rows.length === 0 || filteredRows.length === 0}
+              title={
+                analysis.rows.length === 0
+                  ? 'Select a Tally Primary Group and load data before exporting.'
+                  : filteredRows.length === 0
+                    ? 'Current filters yield zero rows. Clear filters to enable export.'
+                    : 'Export the multi-sheet styled Excel workbook.'
+              }
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}{' '}
               {exporting ? 'Exporting…' : 'Export Beautiful Excel'}
+            </button>
+            <button
+              onClick={copyLLMMarkdown}
+              disabled={copyingMd !== 'idle' || filteredRows.length === 0}
+              title="Copy a self-contained markdown brief (header + audit prompt + CSV tables) to paste into ChatGPT / Claude / Gemini for TDS / GST / RCM review."
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 disabled:opacity-60"
+            >
+              <ClipboardCopy size={15} />
+              {copyingMd === 'copied' ? 'Copied ✓' : copyingMd === 'copying' ? 'Copying…' : 'Copy LLM Markdown'}
+            </button>
+            <button
+              onClick={downloadLLMMarkdown}
+              disabled={filteredRows.length === 0}
+              title="Download the same markdown brief as a .md file."
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-indigo-300 bg-white text-indigo-700 text-sm font-bold hover:bg-indigo-50 disabled:opacity-60"
+            >
+              <FileText size={15} /> Download .md
             </button>
             <input
               ref={profileFileRef}
