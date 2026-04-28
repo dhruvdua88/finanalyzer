@@ -2,7 +2,6 @@ import path from 'path';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { DatabaseSync } from 'node:sqlite';
 import * as XLSX from 'xlsx';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -14,6 +13,29 @@ const {
   reconcile,
   exportXlsx,
 } = cjsRequire('./desktop-backend/services/gstr2bReconciliation.cjs');
+
+// better-sqlite3 is loaded via createRequire because it's a CommonJS native
+// addon and this file is ESM. The module exports a constructor function.
+const Database = cjsRequire('better-sqlite3') as any;
+
+// Shared schema/PRAGMA/hash helpers — see desktop-backend/services/auditDbCore.cjs.
+// Single source of truth for the schema; both vite dev server and the SEA
+// backend read from the same `audit.sqlite` file at the same path.
+const {
+  resolveAuditDbPath,
+  applyAuditPragmas,
+  initializeAuditSchema,
+  hashRows,
+  getLastImportHash,
+  recordImport,
+} = cjsRequire('./desktop-backend/services/auditDbCore.cjs') as {
+  resolveAuditDbPath: () => string;
+  applyAuditPragmas: (db: any) => void;
+  initializeAuditSchema: (db: any) => void;
+  hashRows: (rows: any[]) => string;
+  getLastImportHash: (db: any) => { source_hash: string; row_count: number; imported_at: string } | null;
+  recordImport: (db: any, sourceHash: string, rowCount: number) => void;
+};
 
 const DEFAULT_LOADER_ROOT_CANDIDATES = [
   path.resolve(__dirname, 'tally-database-loader-main (1)', 'tally-database-loader-main'),
@@ -76,7 +98,7 @@ const normalizeLoaderDateInput = (value: any): string => {
 const toLoaderCliDate = (isoDate: string): string => String(isoDate || '').replace(/-/g, '');
 const newId = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
-let auditDb: DatabaseSync | null = null;
+let auditDb: any = null;
 let auditLoadedRows = 0;
 let gstr2bImports: any[] = [];
 const gstr2bRowsByImport = new Map<string, any[]>();
@@ -100,52 +122,18 @@ const toAccountingFlag = (value: any): number => {
   return toSafeNumber(value) > 0 ? 1 : 0;
 };
 
-const AUDIT_SCHEMA_SQL = `
-  CREATE TABLE IF NOT EXISTS ledger_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    guid TEXT,
-    date TEXT,
-    voucher_type TEXT,
-    voucher_number TEXT,
-    invoice_number TEXT,
-    reference_number TEXT,
-    narration TEXT,
-    party_name TEXT,
-    gstin TEXT,
-    ledger TEXT,
-    amount REAL,
-    group_name TEXT,
-    opening_balance REAL,
-    closing_balance REAL,
-    tally_parent TEXT,
-    tally_primary TEXT,
-    is_revenue INTEGER,
-    is_accounting_voucher INTEGER,
-    is_master_ledger INTEGER
-  );
-  CREATE INDEX IF NOT EXISTS idx_ledger_entries_date ON ledger_entries(date);
-  CREATE INDEX IF NOT EXISTS idx_ledger_entries_voucher ON ledger_entries(voucher_number);
-  CREATE INDEX IF NOT EXISTS idx_ledger_entries_ledger ON ledger_entries(ledger);
-  CREATE INDEX IF NOT EXISTS idx_ledger_entries_primary ON ledger_entries(tally_primary);
-  CREATE INDEX IF NOT EXISTS idx_ledger_entries_parent ON ledger_entries(tally_parent);
-  CREATE INDEX IF NOT EXISTS idx_ledger_entries_voucher_date_type ON ledger_entries(voucher_number, date, voucher_type);
-  CREATE INDEX IF NOT EXISTS idx_ledger_entries_ledger_primary ON ledger_entries(ledger, tally_primary);
-`;
+// Schema, indexes, and PRAGMA tuning live in desktop-backend/services/auditDbCore.cjs.
+// Keep this file slim — single source of truth for DB layout.
 
-const initializeAuditSchema = (db: DatabaseSync) => {
-  db.exec(AUDIT_SCHEMA_SQL);
-  // Backward compatible migration if DB file already exists without this column.
-  try {
-    db.exec('ALTER TABLE ledger_entries ADD COLUMN is_master_ledger INTEGER DEFAULT 0;');
-  } catch {
-    // Ignore "duplicate column" errors.
-  }
-};
-
-const getAuditDb = (): DatabaseSync => {
+const getAuditDb = (): any => {
   if (auditDb) return auditDb;
 
-  auditDb = new DatabaseSync(':memory:');
+  // Persisted to ~/.finanalyzer/audit.sqlite (or $FINANALYZER_DATA_DIR).
+  // Re-opening the same file across server restarts means the user does
+  // not pay re-ingest cost on every reload.
+  const dbPath = resolveAuditDbPath();
+  auditDb = new Database(dbPath);
+  applyAuditPragmas(auditDb);
   initializeAuditSchema(auditDb);
   return auditDb;
 };
@@ -172,7 +160,7 @@ const getAuditSummary = () => {
   };
 };
 
-const insertAuditRowsIntoDb = (db: DatabaseSync, rows: any[]) => {
+const insertAuditRowsIntoDb = (db: any, rows: any[]) => {
   const stmt = db.prepare(`
     INSERT INTO ledger_entries (
       guid, date, voucher_type, voucher_number, invoice_number, reference_number, narration,
@@ -213,7 +201,7 @@ const insertAuditRowsIntoDb = (db: DatabaseSync, rows: any[]) => {
   return insertedRows;
 };
 
-const buildReferenceCollectionsForExport = (db: DatabaseSync) => {
+const buildReferenceCollectionsForExport = (db: any) => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS trn_accounting (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -314,19 +302,30 @@ const buildReferenceCollectionsForExport = (db: DatabaseSync) => {
 
 const loadAuditRows = (rows: any[]): { insertedRows: number; summary: ReturnType<typeof getAuditSummary> } => {
   const db = getAuditDb();
-  db.exec('DELETE FROM ledger_entries;');
 
-  db.exec('BEGIN;');
-  let insertedRows = 0;
-
-  try {
-    insertedRows = insertAuditRowsIntoDb(db, rows);
-    db.exec('COMMIT;');
-  } catch (error) {
-    db.exec('ROLLBACK;');
-    throw error;
+  // Hash-skip: if the incoming rows are byte-identical to the last successful
+  // import, don't pay the DELETE+INSERT cost again. The audit DB is persisted
+  // to disk, so the previous data is still there.
+  const sourceHash = hashRows(rows);
+  const lastImport = getLastImportHash(db);
+  if (lastImport && lastImport.source_hash === sourceHash) {
+    const summary = getAuditSummary();
+    auditLoadedRows = summary.totalRows;
+    return { insertedRows: summary.totalRows, summary };
   }
 
+  // Single transaction wraps DELETE + bulk INSERT. better-sqlite3's
+  // db.transaction() compiles to a savepoint and is dramatically faster
+  // than driving BEGIN/COMMIT manually because it avoids per-statement
+  // commit overhead.
+  const runImport = db.transaction((batch: any[]) => {
+    db.exec('DELETE FROM ledger_entries;');
+    const inserted = insertAuditRowsIntoDb(db, batch);
+    recordImport(db, sourceHash, inserted);
+    return inserted;
+  });
+
+  const insertedRows = runImport(rows);
   auditLoadedRows = insertedRows;
   return {
     insertedRows,
@@ -1224,18 +1223,19 @@ const exportAuditSourceBuffer = (): Buffer => {
 
   ensureTempDataDir();
   const filePath = path.join(tempDataDir, `export-${Date.now()}.sqlite`);
-  const exportDb = new DatabaseSync(filePath);
+  const exportDb = new Database(filePath);
+  applyAuditPragmas(exportDb);
   initializeAuditSchema(exportDb);
-  exportDb.exec('BEGIN;');
-  try {
+  // Single transaction for the whole export: DELETE+INSERT into trn_accounting,
+  // mst_ledger, trial_balance_from_mst_ledger inside buildReferenceCollections.
+  const runExport = exportDb.transaction(() => {
     insertAuditRowsIntoDb(exportDb, rows);
     buildReferenceCollectionsForExport(exportDb);
-    exportDb.exec('COMMIT;');
-  } catch (error) {
-    exportDb.exec('ROLLBACK;');
-    throw error;
+  });
+  try {
+    runExport();
   } finally {
-    (exportDb as any).close?.();
+    exportDb.close?.();
   }
 
   const buffer = fs.readFileSync(filePath);
@@ -1253,9 +1253,11 @@ const readNormalizedAuditSourceRowsBuffer = (buffer: Buffer): any[] => {
   const filePath = path.join(tempDataDir, `parse-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
   fs.writeFileSync(filePath, buffer);
 
-  let sourceDb: DatabaseSync | null = null;
+  let sourceDb: any = null;
   try {
-    sourceDb = new DatabaseSync(filePath);
+    // Read-only: the TSF file is provided by the user; we never write to it.
+    // readonly mode also lets better-sqlite3 skip WAL setup.
+    sourceDb = new Database(filePath, { readonly: true });
     const tableExists = sourceDb
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_entries'")
       .get() as any;
@@ -1306,9 +1308,9 @@ const readAuditSourceRowsBuffer = (buffer: Buffer): { columns: string[]; rows: a
   const filePath = path.join(tempDataDir, `convert-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
   fs.writeFileSync(filePath, buffer);
 
-  let sourceDb: DatabaseSync | null = null;
+  let sourceDb: any = null;
   try {
-    sourceDb = new DatabaseSync(filePath);
+    sourceDb = new Database(filePath, { readonly: true });
     const tableExists = sourceDb
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_entries'")
       .get() as any;

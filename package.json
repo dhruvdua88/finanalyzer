@@ -15,6 +15,7 @@
     "tauri:build": "cmd /c \"set NODE_OPTIONS=--no-deprecation&& set PATH=%USERPROFILE%\\.cargo\\bin;%PATH%&& tauri build\""
   },
   "dependencies": {
+    "better-sqlite3": "^12.9.0",
     "dayjs": "^1.11.19",
     "lucide-react": "^0.563.0",
     "papaparse": "^5.5.3",
