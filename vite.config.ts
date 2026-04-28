@@ -202,101 +202,81 @@ const insertAuditRowsIntoDb = (db: any, rows: any[]) => {
 };
 
 const buildReferenceCollectionsForExport = (db: any) => {
+  // Previously: three CREATE TABLE + DELETE + INSERT...SELECT cycles, plus a
+  // correlated NOT EXISTS subquery inside ROW_NUMBER() that re-scanned
+  // ledger_entries for every row (catastrophic on 200k+ rows).
+  //
+  // Now: three VIEWs. SELECT-time materialisation in SQLite is fine for the
+  // export use case (a third-party reader opens the file once and SELECTs).
+  // The "is there any master row?" check is hoisted into a CTE so it
+  // evaluates once instead of per row.
+  //
+  // Drop any pre-existing physical tables from older export DBs so re-export
+  // into the same path doesn't conflict with the view names.
   db.exec(`
-    CREATE TABLE IF NOT EXISTS trn_accounting (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      guid TEXT,
-      date TEXT,
-      voucher_type TEXT,
-      voucher_number TEXT,
-      invoice_number TEXT,
-      reference_number TEXT,
-      narration TEXT,
-      party_name TEXT,
-      ledger TEXT,
-      amount REAL,
-      group_name TEXT,
-      tally_parent TEXT,
-      tally_primary TEXT,
-      gstin TEXT,
-      is_revenue INTEGER,
-      is_accounting_voucher INTEGER
-    );
-    DELETE FROM trn_accounting;
-    INSERT INTO trn_accounting (
-      guid, date, voucher_type, voucher_number, invoice_number, reference_number, narration,
-      party_name, ledger, amount, group_name, tally_parent, tally_primary, gstin, is_revenue, is_accounting_voucher
-    )
-    SELECT
-      guid, date, voucher_type, voucher_number, invoice_number, reference_number, narration,
-      party_name, ledger, amount, group_name, tally_parent, tally_primary, gstin, is_revenue, is_accounting_voucher
-    FROM ledger_entries
-    WHERE COALESCE(is_master_ledger, 0) = 0;
+    DROP TABLE IF EXISTS trn_accounting;
+    DROP TABLE IF EXISTS mst_ledger;
+    DROP TABLE IF EXISTS trial_balance_from_mst_ledger;
+    DROP VIEW IF EXISTS trn_accounting;
+    DROP VIEW IF EXISTS mst_ledger;
+    DROP VIEW IF EXISTS trial_balance_from_mst_ledger;
 
-    CREATE TABLE IF NOT EXISTS mst_ledger (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ledger TEXT,
-      group_name TEXT,
-      tally_parent TEXT,
-      tally_primary TEXT,
-      gstin TEXT,
-      is_revenue INTEGER,
-      opening_balance REAL,
-      closing_balance REAL
-    );
-    DELETE FROM mst_ledger;
-    INSERT INTO mst_ledger (
-      ledger, group_name, tally_parent, tally_primary, gstin, is_revenue, opening_balance, closing_balance
-    )
-    SELECT
-      ledger, group_name, tally_parent, tally_primary, gstin, is_revenue, opening_balance, closing_balance
-    FROM (
+    CREATE VIEW trn_accounting AS
       SELECT
-        ledger, group_name, tally_parent, tally_primary, gstin, is_revenue, opening_balance, closing_balance,
-        ROW_NUMBER() OVER (
-          PARTITION BY ledger
-          ORDER BY
-            CASE WHEN ABS(COALESCE(closing_balance, 0)) > 0 THEN 0 ELSE 1 END,
-            id ASC
-        ) AS rn
+        guid, date, voucher_type, voucher_number, invoice_number, reference_number, narration,
+        party_name, ledger, amount, group_name, tally_parent, tally_primary, gstin,
+        is_revenue, is_accounting_voucher
       FROM ledger_entries
-      WHERE TRIM(COALESCE(ledger, '')) <> ''
-        AND (
-          COALESCE(is_master_ledger, 0) = 1
-          OR NOT EXISTS (
-            SELECT 1 FROM ledger_entries master_probe WHERE COALESCE(master_probe.is_master_ledger, 0) = 1
-          )
-        )
-    ) ranked
-    WHERE rn = 1;
+      WHERE COALESCE(is_master_ledger, 0) = 0;
 
-    CREATE TABLE IF NOT EXISTS trial_balance_from_mst_ledger (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ledger TEXT,
-      tally_primary TEXT,
-      tally_parent TEXT,
-      opening_balance REAL,
-      closing_balance REAL,
-      opening_dr REAL,
-      opening_cr REAL,
-      closing_dr REAL,
-      closing_cr REAL
-    );
-    DELETE FROM trial_balance_from_mst_ledger;
-    INSERT INTO trial_balance_from_mst_ledger (
-      ledger, tally_primary, tally_parent, opening_balance, closing_balance, opening_dr, opening_cr, closing_dr, closing_cr
-    )
-    SELECT
-      ledger,
-      tally_primary,
-      tally_parent,
-      opening_balance,
-      closing_balance,
-      CASE WHEN opening_balance < 0 THEN ABS(opening_balance) ELSE 0 END AS opening_dr,
-      CASE WHEN opening_balance > 0 THEN opening_balance ELSE 0 END AS opening_cr,
-      CASE WHEN closing_balance < 0 THEN ABS(closing_balance) ELSE 0 END AS closing_dr,
-      CASE WHEN closing_balance > 0 THEN closing_balance ELSE 0 END AS closing_cr
-    FROM mst_ledger;
+    CREATE VIEW mst_ledger AS
+      WITH master_present AS (
+        SELECT EXISTS(
+          SELECT 1 FROM ledger_entries WHERE COALESCE(is_master_ledger, 0) = 1
+        ) AS has_master
+      ),
+      candidates AS (
+        SELECT
+          le.id,
+          le.ledger,
+          le.group_name,
+          le.tally_parent,
+          le.tally_primary,
+          le.gstin,
+          le.is_revenue,
+          le.opening_balance,
+          le.closing_balance,
+          ROW_NUMBER() OVER (
+            PARTITION BY le.ledger
+            ORDER BY
+              CASE WHEN ABS(COALESCE(le.closing_balance, 0)) > 0 THEN 0 ELSE 1 END,
+              le.id ASC
+          ) AS rn
+        FROM ledger_entries le
+        CROSS JOIN master_present mp
+        WHERE TRIM(COALESCE(le.ledger, '')) <> ''
+          AND (
+            COALESCE(le.is_master_ledger, 0) = 1
+            OR mp.has_master = 0
+          )
+      )
+      SELECT ledger, group_name, tally_parent, tally_primary, gstin, is_revenue,
+             opening_balance, closing_balance
+      FROM candidates
+      WHERE rn = 1;
+
+    CREATE VIEW trial_balance_from_mst_ledger AS
+      SELECT
+        ledger,
+        tally_primary,
+        tally_parent,
+        opening_balance,
+        closing_balance,
+        CASE WHEN opening_balance < 0 THEN ABS(opening_balance) ELSE 0 END AS opening_dr,
+        CASE WHEN opening_balance > 0 THEN opening_balance ELSE 0 END AS opening_cr,
+        CASE WHEN closing_balance < 0 THEN ABS(closing_balance) ELSE 0 END AS closing_dr,
+        CASE WHEN closing_balance > 0 THEN closing_balance ELSE 0 END AS closing_cr
+      FROM mst_ledger;
   `);
 };
 
