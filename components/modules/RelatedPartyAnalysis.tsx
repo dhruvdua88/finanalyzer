@@ -716,14 +716,20 @@ const RelatedPartyAnalysis: React.FC<Props> = ({ data, externalProfile, onProfil
   };
 
   // ── Excel export ────────────────────────────────────────────────────────
-  // Seven-sheet workbook:
-  //   1. AS-18 Disclosure Note      — the matrix + outstanding
+  // Nine-sheet workbook:
+  //   1. AS-18 Disclosure Note      — relationship × tx-type matrix + outstanding (analytical)
   //   2. Names & Relationships      — list of related parties with category + notes
   //   3. Party-wise Volumes         — per-party totals + tx-type breakdown
   //   4. Material Transactions      — every flagged transaction (Form AOC-2 ready)
   //   5. Outstanding Balances       — year-end balances by party
   //   6. Audit Findings             — anomalies grouped by type
-  //   7. Profile Snapshot           — thresholds + ledger overrides for traceability
+  //   7. Schedule III Note          — Form 2: audit-paper layout grouped by relationship,
+  //                                   per-party transaction lines with prev-year column.
+  //                                   This is the sheet that pastes into Notes to Accounts.
+  //   8. Per-Party Matrix           — Form 1: pivoted with each party as a column,
+  //                                   transaction types as rows. Useful when there are
+  //                                   few related parties.
+  //   9. Profile Snapshot           — thresholds + ledger overrides for traceability
   const exportExcel = async () => {
     if (exporting) return;
     setExporting(true);
@@ -1135,7 +1141,268 @@ const RelatedPartyAnalysis: React.FC<Props> = ({ data, externalProfile, onProfil
         XLSX.utils.book_append_sheet(wb, ws, 'Audit Findings');
       }
 
-      // ───── Sheet 7: Profile Snapshot ──────────────────────────────────
+      // ───── Sheet 8: Schedule III Note (Form 2 — audit paper layout) ──
+      //
+      // The conventional Indian audit-paper format. Three sections:
+      //
+      //   (a) Names of related parties grouped under category headings.
+      //   (b) Transactions during the year — a flat 3-column block
+      //       (Particulars / Current Year / Previous Year) where each
+      //       relationship category is a header row, each party a sub-
+      //       header, and each AS-18 transaction type a leaf row under
+      //       its party.
+      //   (c) Outstanding balances at year-end — same shape, with
+      //       receivable/payable treated as separate leaf rows.
+      //
+      // The Previous Year column is left blank for the auditor to fill
+      // in manually — the current dataset doesn't carry prior-year
+      // information and we'd rather leave a clean cell than fabricate.
+      // To pre-fill it later, plug values into profile.previousYearMatrix
+      // (key shape `{partyName}|{txType}` → number).
+      {
+        const aoa: any[][] = [];
+        aoa.push(['Note — Related Party Disclosures (Schedule III, AS-18)']);
+        aoa.push(['Prepared per AS-18 read with Schedule III to the Companies Act 2013. Previous-year column to be completed by the auditor from the prior period working papers.']);
+        aoa.push(['']);
+
+        // Group parties by relationship category, preserving the canonical
+        // order so the note reads top-to-bottom in the standard sequence.
+        const partiesByCat = new Map<RPRelationshipCategory, typeof analysis.parties>();
+        analysis.parties.forEach((p) => {
+          const arr = partiesByCat.get(p.category) || [];
+          arr.push(p);
+          partiesByCat.set(p.category, arr);
+        });
+
+        // ── (a) Names and nature of relationship ──────────────────────
+        aoa.push(['(a) Names of related parties and nature of relationship']);
+        aoa.push(['']);
+        aoa.push(['Sl', 'Particulars', '']);
+        let sl = 1;
+        RELATIONSHIP_ORDER.forEach((cat) => {
+          const parties = partiesByCat.get(cat) || [];
+          if (parties.length === 0) return;
+          aoa.push([`(${sl++})`, RELATIONSHIP_LABEL[cat], '']);
+          parties.forEach((p) => {
+            const desc = p.relationshipNotes ? `${p.partyName} — ${p.relationshipNotes}` : p.partyName;
+            aoa.push(['', desc, '']);
+          });
+        });
+        aoa.push(['']);
+
+        // ── (b) Transactions during the year ──────────────────────────
+        aoa.push(['(b) Transactions during the year (₹)']);
+        aoa.push(['']);
+        aoa.push(['Particulars', 'Current Year', 'Previous Year']);
+        const bStart = aoa.length;
+        const sectionRowMarkers: number[] = [];     // rows we want to bold/colour as section headers
+        const partyRowMarkers: number[] = [];       // rows we want to bold/italicise as party headers
+        RELATIONSHIP_ORDER.forEach((cat) => {
+          const parties = partiesByCat.get(cat) || [];
+          if (parties.length === 0) return;
+          // Skip categories with zero transaction volume entirely.
+          const hasAny = parties.some((p) => Object.values(p.txByType).some((v) => Math.abs(Number(v) || 0) > 0));
+          if (!hasAny) return;
+          sectionRowMarkers.push(aoa.length);
+          aoa.push([RELATIONSHIP_LABEL[cat], '', '']);
+          parties.forEach((p) => {
+            const types = (Object.entries(p.txByType) as [RPTransactionType, number][])
+              .filter(([, v]) => Math.abs(Number(v) || 0) > 0)
+              .sort((a, b) => Math.abs(Number(b[1]) || 0) - Math.abs(Number(a[1]) || 0));
+            if (types.length === 0) return;
+            partyRowMarkers.push(aoa.length);
+            aoa.push([p.partyName, '', '']);
+            types.forEach(([txType, v]) => {
+              // Previous-year lookup: profile.previousYearMatrix[partyName][txType]
+              // The nested shape is the existing type contract; if you want
+              // to back-fill prior figures, edit the JSON profile directly
+              // or use the import-profile button on the Tag step.
+              const prev = profile.previousYearMatrix?.[p.partyName]?.[txType];
+              aoa.push([
+                `    ${TX_TYPE_LABEL[txType]}`,
+                Math.round(Number(v) || 0),
+                typeof prev === 'number' ? Math.round(prev) : '',
+              ]);
+            });
+          });
+        });
+        aoa.push(['']);
+
+        // ── (c) Outstanding balances ──────────────────────────────────
+        aoa.push(['(c) Outstanding balances at year-end (₹)']);
+        aoa.push(['']);
+        aoa.push(['Particulars', 'Current Year', 'Previous Year']);
+        RELATIONSHIP_ORDER.forEach((cat) => {
+          const parties = partiesByCat.get(cat) || [];
+          if (parties.length === 0) return;
+          const hasOutstanding = parties.some((p) => Math.abs(p.closing) > 0);
+          if (!hasOutstanding) return;
+          sectionRowMarkers.push(aoa.length);
+          aoa.push([RELATIONSHIP_LABEL[cat], '', '']);
+          parties.forEach((p) => {
+            if (Math.abs(p.closing) <= 0) return;
+            partyRowMarkers.push(aoa.length);
+            aoa.push([p.partyName, '', '']);
+            if (p.closing > 0) {
+              const prev = profile.previousYearMatrix?.[p.partyName]?.['receivable'];
+              aoa.push([
+                '    Receivable (Dr)',
+                Math.round(p.closing),
+                typeof prev === 'number' ? Math.round(prev) : '',
+              ]);
+            } else {
+              const prev = profile.previousYearMatrix?.[p.partyName]?.['payable'];
+              aoa.push([
+                '    Payable (Cr)',
+                Math.round(Math.abs(p.closing)),
+                typeof prev === 'number' ? Math.round(prev) : '',
+              ]);
+            }
+          });
+        });
+        aoa.push(['']);
+        aoa.push(['Note — figures rounded to nearest rupee. Material individual transactions disclosed separately under Section 188 of the Companies Act 2013 / Form AOC-2 where applicable.']);
+
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        ws['!cols'] = [{ wch: 60 }, { wch: 18 }, { wch: 18 }];
+        ws['!merges'] = [
+          { s: { r: 0, c: 0 }, e: { r: 0, c: 2 } },
+          { s: { r: 1, c: 0 }, e: { r: 1, c: 2 } },
+        ];
+        ws['!freeze'] = { xSplit: 0, ySplit: 3 };
+        // Title + meta
+        for (let c = 0; c <= 2; c++) paint(ws, 0, c, titleStyle);
+        for (let c = 0; c <= 2; c++) paint(ws, 1, c, metaStyle);
+        // Style section heading rows
+        const sectionHeadStyle = {
+          font: { name: 'Calibri', sz: 11, bold: true, color: { rgb: 'FFFFFF' } },
+          fill: { fgColor: { rgb: '1E40AF' } },
+          alignment: { horizontal: 'left' },
+          border: thinBorder,
+        };
+        const partyHeadStyle = {
+          font: { name: 'Calibri', sz: 10, bold: true, color: { rgb: '1E3A8A' } },
+          fill: { fgColor: { rgb: 'EFF6FF' } },
+          alignment: { horizontal: 'left' },
+          border: thinBorder,
+        };
+        sectionRowMarkers.forEach((r) => {
+          for (let c = 0; c <= 2; c++) paint(ws, r, c, sectionHeadStyle);
+        });
+        partyRowMarkers.forEach((r) => {
+          for (let c = 0; c <= 2; c++) paint(ws, r, c, partyHeadStyle);
+        });
+        XLSX.utils.book_append_sheet(wb, ws, 'Schedule III Note');
+      }
+
+      // ───── Sheet 9: Per-Party Matrix (Form 1 — analytical layout) ────
+      //
+      // Same data as Sheet 8 but pivoted: each individual related party
+      // becomes a column (grouped under category sub-headers), AS-18
+      // transaction types are rows. Useful when the entity has few
+      // related parties and the auditor wants a single across-the-board
+      // view rather than a long narrative note.
+      {
+        // Column layout: parties in canonical category order
+        const partyOrder: { name: string; cat: RPRelationshipCategory }[] = [];
+        RELATIONSHIP_ORDER.forEach((cat) => {
+          const parties = analysis.parties.filter((p) => p.category === cat);
+          parties.forEach((p) => partyOrder.push({ name: p.partyName, cat }));
+        });
+
+        // Active tx-types: only those with any volume across all parties
+        const activeTxTypes: RPTransactionType[] = [];
+        const txOrder: RPTransactionType[] = [
+          'sale-goods','sale-services','purchase-goods','purchase-services',
+          'rendering-services','receiving-services','agency-arrangements',
+          'leasing-hire-purchase','rd-transfer','license-agreements',
+          'finance-given','finance-received','interest-paid','interest-received',
+          'rent-paid','rent-received','remuneration','reimbursement',
+          'guarantees-given','guarantees-received','management-contracts',
+          'dividend-paid','dividend-received','other',
+        ];
+        txOrder.forEach((tx) => {
+          const hasAny = analysis.parties.some((p) => Math.abs(Number(p.txByType[tx]) || 0) > 0);
+          if (hasAny) activeTxTypes.push(tx);
+        });
+
+        const aoa: any[][] = [];
+        aoa.push(['Per-party related-party transaction matrix (₹)']);
+        aoa.push(['Companion to the Schedule III Note. Each column is one party; the category sub-header above shows its AS-18 relationship.']);
+        aoa.push(['']);
+        // Sub-header row — category labels above each party column
+        const subHead: any[] = [''];
+        partyOrder.forEach((p) => subHead.push(RELATIONSHIP_LABEL[p.cat]));
+        subHead.push('');
+        aoa.push(subHead);
+        // Header row — party names
+        const head: any[] = ['Nature of transaction'];
+        partyOrder.forEach((p) => head.push(p.name));
+        head.push('Total');
+        aoa.push(head);
+        // Body
+        activeTxTypes.forEach((tx) => {
+          const row: any[] = [TX_TYPE_LABEL[tx]];
+          let total = 0;
+          partyOrder.forEach((p) => {
+            const partyRow = analysis.parties.find((q) => q.partyName === p.name);
+            const v = partyRow ? Math.round(Number(partyRow.txByType[tx]) || 0) : 0;
+            row.push(v);
+            total += v;
+          });
+          row.push(total);
+          aoa.push(row);
+        });
+        // Outstanding balances rows
+        aoa.push(['']);
+        const recRow: any[] = ['Receivable at year-end (Dr)'];
+        const payRow: any[] = ['Payable at year-end (Cr)'];
+        let recTotal = 0, payTotal = 0;
+        partyOrder.forEach((p) => {
+          const partyRow = analysis.parties.find((q) => q.partyName === p.name);
+          const closing = partyRow ? partyRow.closing : 0;
+          if (closing > 0) {
+            recRow.push(Math.round(closing));
+            payRow.push(0);
+            recTotal += closing;
+          } else if (closing < 0) {
+            recRow.push(0);
+            payRow.push(Math.round(Math.abs(closing)));
+            payTotal += Math.abs(closing);
+          } else {
+            recRow.push(0);
+            payRow.push(0);
+          }
+        });
+        recRow.push(Math.round(recTotal));
+        payRow.push(Math.round(payTotal));
+        aoa.push(recRow);
+        aoa.push(payRow);
+
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        const lastCol = partyOrder.length + 1;
+        ws['!cols'] = [{ wch: 38 }, ...partyOrder.map(() => ({ wch: 22 })), { wch: 18 }];
+        ws['!merges'] = [
+          { s: { r: 0, c: 0 }, e: { r: 0, c: lastCol } },
+          { s: { r: 1, c: 0 }, e: { r: 1, c: lastCol } },
+        ];
+        ws['!freeze'] = { xSplit: 1, ySplit: 5 };
+        for (let c = 0; c <= lastCol; c++) paint(ws, 0, c, titleStyle);
+        for (let c = 0; c <= lastCol; c++) paint(ws, 1, c, metaStyle);
+        for (let c = 0; c <= lastCol; c++) paint(ws, 3, c, headerStyle('64748B')); // category subheader
+        for (let c = 0; c <= lastCol; c++) paint(ws, 4, c, headerStyle('1E40AF')); // party name header
+        for (let r = 5; r < 5 + activeTxTypes.length; r++) {
+          paint(ws, r, 0, dataStyle(r, false, true));
+          for (let c = 1; c <= lastCol; c++) paint(ws, r, c, dataStyle(r, true, false, '#,##0.00'));
+        }
+        // Outstanding rows styled as totals
+        const recR = 5 + activeTxTypes.length + 1;
+        for (let c = 0; c <= lastCol; c++) paint(ws, recR, c, totalStyle('#,##0.00'));
+        for (let c = 0; c <= lastCol; c++) paint(ws, recR + 1, c, totalStyle('#,##0.00'));
+        XLSX.utils.book_append_sheet(wb, ws, 'Per-Party Matrix');
+      }
+
+      // ───── Sheet 10: Profile Snapshot ─────────────────────────────────
       {
         const aoa: any[][] = [
           ['Profile snapshot — for reproducibility'],
