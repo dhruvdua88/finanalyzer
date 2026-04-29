@@ -225,11 +225,26 @@ function compute(input: PartyMatrixWorkerInput): PartyMatrixWorkerOutput {
     const partyGuids = new Set<string>();
     for (let i = 0; i < partyEntries.length; i++) partyGuids.add(partyEntries[i].guid);
 
-    // Counterpart entries aggregated per-ledger for this voucher
+    // Counterpart entries aggregated per-ledger for this voucher.
+    //
+    // Sign convention (preserved end-to-end so columns reconcile to the
+    // underlying ledger movements):
+    //   • Tally amount > 0  → debit  (asset / expense / purchase / bank inflow)
+    //   • Tally amount < 0  → credit (liability / income / sales / bank outflow)
+    //
+    // Buckets and counter-ledger aggregates therefore carry the SIGN of
+    // each entry. Sales bucket on a sales voucher = -10,000 (credit to
+    // income); a sales return that day adds +10,000, netting to zero.
+    // This means: sum_across_parties(totalSales) == net movement on the
+    // sales-side ledgers for the period — which is what the user expects
+    // when they reconcile the column total against the trial balance.
+    //
+    // The OLD behaviour (Math.abs before summing) silently treated returns
+    // and credit notes as ADDITIONS to the bucket, breaking the reconcile.
     interface CounterAgg {
       ledger: string;
       bucket: Bucket;
-      amount: number; // absolute
+      amount: number; // signed: + = debit-side accumulation, − = credit-side
     }
     const counterByLedger = new Map<string, CounterAgg>();
     const buckets: Record<Bucket, number> = {
@@ -246,7 +261,7 @@ function compute(input: PartyMatrixWorkerInput): PartyMatrixWorkerOutput {
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
       if (partyGuids.has(e.guid)) continue;
-      const amt = Math.abs(toNum(e.amount));
+      const amt = toNum(e.amount); // signed — see header note above
       if (amt === 0) continue;
       const ledger = String(e.Ledger || '').trim();
       let b: Bucket = 'others';
@@ -274,9 +289,10 @@ function compute(input: PartyMatrixWorkerInput): PartyMatrixWorkerOutput {
     const voucherNumber = String(sample.voucher_number || '');
     const vk = voucherKey(sample); // computed once per voucher, reused below
 
-    // Build counterpart label once per voucher
+    // Build counterpart label once per voucher. Sort by absolute magnitude
+    // (sign-aware data, but the user reads "biggest legs first" intuitively).
     const counterLabel = Array.from(counterByLedger.values())
-      .sort((a, b) => b.amount - a.amount)
+      .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
       .map((c) => `${c.ledger}: ${c.amount.toFixed(2)}`)
       .join(' | ');
 
@@ -346,9 +362,14 @@ function compute(input: PartyMatrixWorkerInput): PartyMatrixWorkerOutput {
   rows.forEach((r) => {
     const movementNet = r.creditTotal - r.debitTotal;
     const netBalance = Number.isFinite(r.netBalance) ? r.netBalance : movementNet;
-    const tdsExpensePct = r.totalExpenses !== 0 ? (r.tdsDeducted / r.totalExpenses) * 100 : null;
-    const den = r.totalSales + r.totalExpenses;
-    const gstSalesExpensePct = den !== 0 ? (r.gstAmount / den) * 100 : null;
+    // Ratios are reported as magnitudes (% positive). Bucket totals are
+    // sign-preserved for reconciliation, so divide absolute values to
+    // produce the figure auditors actually want to see.
+    const tdsExpensePct = Math.abs(r.totalExpenses) > 0
+      ? (Math.abs(r.tdsDeducted) / Math.abs(r.totalExpenses)) * 100
+      : null;
+    const gstDen = Math.abs(r.totalSales) + Math.abs(r.totalExpenses);
+    const gstSalesExpensePct = gstDen > 0 ? (Math.abs(r.gstAmount) / gstDen) * 100 : null;
 
     const counterLedgers: CounterLedgerStat[] = Array.from(r._counterMap.entries())
       .map(([ledger, stat]) => ({
@@ -357,7 +378,9 @@ function compute(input: PartyMatrixWorkerInput): PartyMatrixWorkerOutput {
         amount: stat.amount,
         voucherCount: stat.vouchers.size,
       }))
-      .sort((a, b) => b.amount - a.amount);
+      // Sign-aware data — sort by magnitude so the "top counter ledgers"
+      // list still surfaces the largest legs first regardless of side.
+      .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
 
     const expenseList = counterLedgers
       .filter((c) => c.bucket === 'expense' || c.bucket === 'purchase')

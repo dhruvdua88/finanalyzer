@@ -61,8 +61,18 @@ const toNum = (value: any): number => {
 };
 const sanitizeList = (v: any) =>
   Array.isArray(v) ? Array.from(new Set(v.map((x) => String(x || '').trim()).filter(Boolean))) : [];
-const money = (v: number) =>
-  Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Accounting-style number formatter: positives render normally, negatives
+// wrap in parentheses (the convention CAs read at a glance). Bucket totals
+// in this module are SIGN-PRESERVED — sales/income credits sum negative,
+// purchase/expense debits sum positive — so reversal-heavy parties surface
+// visually instead of being silently absorbed into a "looks fine" total.
+const money = (v: number) => {
+  const n = Number(v || 0);
+  if (n < 0) {
+    return `(${Math.abs(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
+  }
+  return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
 
 // Compact Indian abbreviation — turns 1,00,12,36,934.75 into "10.01 Cr" so
 // the number columns stop being unreadable snakes of digits. Full precision
@@ -652,10 +662,19 @@ const PartyLedgerMatrix: React.FC<Props> = ({ data, externalProfile, onProfileUp
 
     // Anomaly filters — only apply when the relevant tag list is populated.
     // Otherwise "Zero TDS" would flag every party in the book.
+    //
+    // Bucket totals are SIGN-PRESERVED (income-side ledgers carry credit
+    // sign, expense-side carry debit sign — see partyMatrixWorker header
+    // note). So all magnitude tests below use Math.abs() rather than
+    // ">0 / <1" comparisons that previously assumed positive-only data.
     if (anomaly === 'zero_tds' && tdsTagged) {
-      base = base.filter((r) => r.totalExpenses > 0 && r.tdsDeducted < 1);
+      base = base.filter((r) => Math.abs(r.totalExpenses) > 0 && Math.abs(r.tdsDeducted) < 1);
     } else if (anomaly === 'zero_gst' && gstTagged) {
-      base = base.filter((r) => (r.totalSales + r.totalExpenses) > 0 && r.gstAmount < 1);
+      base = base.filter(
+        (r) =>
+          Math.abs(r.totalSales) + Math.abs(r.totalExpenses) > 0 &&
+          Math.abs(r.gstAmount) < 1
+      );
     } else if (anomaly === 'balance_gap') {
       base = base.filter((r) => Math.abs(r.balanceGap) > 1);
     } else if (anomaly === 'high_others') {
@@ -663,7 +682,7 @@ const PartyLedgerMatrix: React.FC<Props> = ({ data, externalProfile, onProfileUp
         Math.abs(r.totalSales) + Math.abs(r.totalPurchase) + Math.abs(r.totalExpenses) + Math.abs(r.others);
       base = base.filter((r) => {
         const d = denom(r);
-        return d > 0 && r.others / d > 0.25;
+        return d > 0 && Math.abs(r.others) / d > 0.25;
       });
     }
 
@@ -721,8 +740,11 @@ const PartyLedgerMatrix: React.FC<Props> = ({ data, externalProfile, onProfileUp
       }),
       { sales: 0, purchase: 0, expenses: 0, tds: 0, gst: 0, rcm: 0, bank: 0, others: 0, net: 0 },
     );
-    const tdsExpensePct = a.expenses !== 0 ? (a.tds / a.expenses) * 100 : null;
-    const gstSalesExpensePct = a.sales + a.expenses !== 0 ? (a.gst / (a.sales + a.expenses)) * 100 : null;
+    // Ratios are reported as positive percentages regardless of bucket
+    // sign convention — TDS-to-expense ratio is meaningful as a magnitude.
+    const tdsExpensePct = Math.abs(a.expenses) > 0 ? (Math.abs(a.tds) / Math.abs(a.expenses)) * 100 : null;
+    const gstDen = Math.abs(a.sales) + Math.abs(a.expenses);
+    const gstSalesExpensePct = gstDen > 0 ? (Math.abs(a.gst) / gstDen) * 100 : null;
     return { ...a, tdsExpensePct, gstSalesExpensePct };
   }, [filteredRows]);
 
@@ -732,12 +754,17 @@ const PartyLedgerMatrix: React.FC<Props> = ({ data, externalProfile, onProfileUp
   // "zero TDS" because nothing is being classified as TDS yet.
   const kpis = useMemo(() => {
     const rows = analysis.rows.filter(isActive);
-    const withExpense = rows.filter((r) => r.totalExpenses > 0);
+    // Bucket totals are sign-preserved; use absolute magnitude for KPI tests.
+    const withExpense = rows.filter((r) => Math.abs(r.totalExpenses) > 0);
     const zeroTds = tdsTagged
-      ? withExpense.filter((r) => r.tdsDeducted < 1).length
+      ? withExpense.filter((r) => Math.abs(r.tdsDeducted) < 1).length
       : null;
     const zeroGst = gstTagged
-      ? rows.filter((r) => (r.totalSales + r.totalExpenses) > 0 && r.gstAmount < 1).length
+      ? rows.filter(
+          (r) =>
+            Math.abs(r.totalSales) + Math.abs(r.totalExpenses) > 0 &&
+            Math.abs(r.gstAmount) < 1
+        ).length
       : null;
     const balanceGaps = analysis.rows.filter((r) => Math.abs(r.balanceGap) > 1).length;
     return {
