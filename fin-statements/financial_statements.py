@@ -380,17 +380,293 @@ class FinancialData:
         return self.total_equity() + self.total_noncurrent_liab() + self.total_current_liab()
 
 
+# ─── Validation ───────────────────────────────────────────────────────────────
+
+ERROR   = "ERROR"
+WARNING = "WARNING"
+INFO    = "INFO"
+
+@dataclass
+class Check:
+    severity: str     # ERROR | WARNING | INFO
+    category: str     # Schema | Balance | P&L | Data Quality | Classification
+    message: str
+    detail: str = ""
+
+class ValidationResult:
+    def __init__(self) -> None:
+        self.checks: list[Check] = []
+
+    def error(self, cat: str, msg: str, detail: str = "") -> None:
+        self.checks.append(Check(ERROR, cat, msg, detail))
+
+    def warning(self, cat: str, msg: str, detail: str = "") -> None:
+        self.checks.append(Check(WARNING, cat, msg, detail))
+
+    def info(self, cat: str, msg: str, detail: str = "") -> None:
+        self.checks.append(Check(INFO, cat, msg, detail))
+
+    @property
+    def has_errors(self) -> bool:
+        return any(c.severity == ERROR for c in self.checks)
+
+    @property
+    def errors(self) -> list[Check]:
+        return [c for c in self.checks if c.severity == ERROR]
+
+    @property
+    def warnings(self) -> list[Check]:
+        return [c for c in self.checks if c.severity == WARNING]
+
+    def summary(self) -> str:
+        e = len(self.errors)
+        w = len(self.warnings)
+        parts = []
+        if e: parts.append(f"{e} error{'s' if e > 1 else ''}")
+        if w: parts.append(f"{w} warning{'s' if w > 1 else ''}")
+        return ", ".join(parts) if parts else "✓ All checks passed"
+
+
+# ── Amount parser ─────────────────────────────────────────────────────────────
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    """Parse a Tally TEXT amount field robustly.
+
+    Handles: None, empty string, plain floats, Indian comma format
+    (1,23,456.78), Cr/Dr suffixes, and unexpected non-numeric content.
+
+    Tally sign convention (stored in the DB):
+      negative → debit balance   positive → credit balance
+    The Cr/Dr suffix in some older exports reverses this per usual
+    double-entry convention, so we handle both.
+    """
+    if value is None:
+        return default
+    s = str(value).strip()
+    if not s:
+        return default
+    # Strip Indian-format commas: "1,23,456.78" → "123456.78"
+    s_clean = s.replace(",", "")
+    low = s_clean.lower()
+    # Handle "123456.78 Cr" / "123456.78 Dr" suffix (some Tally versions)
+    if low.endswith("cr"):
+        try:
+            return float(low[:-2].strip())   # Cr in Tally = credit = positive
+        except ValueError:
+            return default
+    if low.endswith("dr"):
+        try:
+            return -float(low[:-2].strip())  # Dr in Tally = debit = negative
+        except ValueError:
+            return default
+    try:
+        return float(s_clean)
+    except (ValueError, TypeError):
+        return default
+
+
+# ── Schema validator ──────────────────────────────────────────────────────────
+
+_REQUIRED_TABLES = {"mst_ledger", "mst_group", "_export_info"}
+_OPTIONAL_TABLES = {"trn_accounting", "trn_voucher"}
+
+_REQUIRED_LEDGER_COLS = {"name", "parent", "closing_balance"}
+_REQUIRED_GROUP_COLS  = {"name", "primary_group"}
+
+
+def validate_schema(con: sqlite3.Connection) -> ValidationResult:
+    """Check that the database has the structure we expect."""
+    vr = ValidationResult()
+
+    existing = {r[0] for r in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    )}
+
+    for t in _REQUIRED_TABLES:
+        if t not in existing:
+            vr.error("Schema", f"Required table missing: '{t}'",
+                     "This may not be a valid Tally SQLite export from this app.")
+
+    for t in _OPTIONAL_TABLES:
+        if t not in existing:
+            vr.warning("Schema", f"Optional table absent: '{t}'",
+                       "Some cross-checks will be skipped.")
+
+    if "mst_ledger" in existing:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(mst_ledger)")}
+        for c in _REQUIRED_LEDGER_COLS:
+            if c not in cols:
+                vr.error("Schema", f"mst_ledger missing column '{c}'")
+        if "opening_balance" not in cols:
+            vr.warning("Schema", "mst_ledger has no 'opening_balance' column",
+                       "Opening stock and prior-year P&L carry-forward will be zero.")
+
+    if "mst_group" in existing:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(mst_group)")}
+        for c in _REQUIRED_GROUP_COLS:
+            if c not in cols:
+                vr.error("Schema", f"mst_group missing column '{c}'")
+
+    if "_export_info" in existing:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(_export_info)")}
+        if "name" not in cols or "value" not in cols:
+            vr.warning("Schema", "_export_info table has unexpected structure",
+                       "Company name and period may not load correctly.")
+
+    return vr
+
+
+# ── Financial-data validator ──────────────────────────────────────────────────
+
+def validate_financial_data(fd: "FinancialData") -> ValidationResult:
+    """Business-logic checks on the loaded financial data."""
+    vr = ValidationResult()
+
+    # ── Balance sheet equation ────────────────────────────────────────────────
+    diff = fd.total_assets() - fd.total_equity_liabilities()
+    if abs(diff) < 1:
+        vr.info("Balance Sheet", "Balance sheet balances to zero. ✓")
+    elif abs(diff) < 50_000:
+        vr.warning("Balance Sheet",
+                   f"Small imbalance: ₹{diff:,.2f}",
+                   "Likely a rounding difference in stock or depreciation entries.")
+    else:
+        vr.error("Balance Sheet",
+                 f"Balance sheet does not balance — difference: ₹{diff:,.0f}",
+                 "Check for ledgers with unusual group assignments or missing classifications.")
+
+    # ── P&L reconciliation ────────────────────────────────────────────────────
+    cy_profit    = fd.pnl_balance - fd.pnl_opening   # current year as Tally computed it
+    our_pbt      = fd.profit_before_tax()
+    pnl_diff     = abs(our_pbt - cy_profit)
+    if pnl_diff < 1:
+        vr.info("P&L", f"P&L reconciles exactly with Tally (₹{our_pbt:,.0f}). ✓")
+    elif pnl_diff < 50_000:
+        vr.warning("P&L",
+                   f"Minor P&L gap: computed ₹{our_pbt:,.0f} vs Tally ₹{cy_profit:,.0f} "
+                   f"(diff ₹{pnl_diff:,.0f})",
+                   "May be caused by rounding in opening/closing stock or minor ledger mismatches.")
+    else:
+        vr.error("P&L",
+                 f"P&L does not reconcile — computed ₹{our_pbt:,.0f}, "
+                 f"Tally ₹{cy_profit:,.0f}, diff ₹{pnl_diff:,.0f}",
+                 "Some ledgers may be under a group not mapped in BS_MAP or PNL_MAP. "
+                 "See 'Unclassified' section below.")
+
+    # ── Unclassified primary groups ───────────────────────────────────────────
+    all_pgs = {l.primary_group for l in fd.ledgers if l.primary_group}
+    for pg in sorted(all_pgs):
+        if pg not in BS_MAP and pg not in PNL_MAP:
+            net = sum(l.closing for l in fd.ledgers if l.primary_group == pg)
+            if abs(net) > 1_000:
+                vr.warning("Classification",
+                           f"Unclassified primary group '{pg}': net ₹{net:,.0f}",
+                           "Add this group to BS_MAP or PNL_MAP at the top of the script "
+                           "to include it in statements.")
+
+    # ── Stock checks ──────────────────────────────────────────────────────────
+    if fd.opening_stock() == 0 and fd.closing_stock() > 0 and fd.pnl_balance != 0:
+        vr.warning("Data Quality",
+                   "Opening stock is zero but closing stock is non-zero",
+                   "If this is not a new business, verify the opening stock ledger.")
+
+    rev = fd.revenue_from_ops()
+    cs  = fd.closing_stock()
+    if rev > 0 and cs > rev * 0.6:
+        vr.warning("Data Quality",
+                   f"Closing stock ₹{cs:,.0f} is >60% of revenue ₹{rev:,.0f}",
+                   "Verify the closing stock value entered is correct.")
+
+    # ── Cash & bank ───────────────────────────────────────────────────────────
+    if fd.cash_and_bank() < -10_000:
+        vr.warning("Data Quality",
+                   f"Net cash & bank is negative (₹{fd.cash_and_bank():,.0f})",
+                   "Some bank accounts may have credit balances (OD) that are classified "
+                   "under 'Bank Accounts' rather than 'Bank OD A/c'. Review Note 13.")
+
+    # ── Receivables vs revenue ────────────────────────────────────────────────
+    tr = fd.trade_receivables()
+    if rev > 0 and tr > rev:
+        vr.warning("Data Quality",
+                   f"Trade receivables ₹{tr:,.0f} exceed annual revenue ₹{rev:,.0f}",
+                   "Debtor days > 365. Check for stale/uncollected debtors or "
+                   "misclassified items under Sundry Debtors.")
+
+    # ── Capital & equity ──────────────────────────────────────────────────────
+    if fd.share_capital() < 0:
+        vr.error("Data Quality",
+                 f"Share Capital is negative (₹{fd.share_capital():,.0f})",
+                 "Capital Account ledgers have a net debit balance. "
+                 "Check Capital Account entries in Tally.")
+
+    if fd.reserves_surplus() < -100_000:
+        vr.warning("Data Quality",
+                   f"Reserves & Surplus is significantly negative (₹{fd.reserves_surplus():,.0f})",
+                   "Accumulated losses exceed paid-up capital. May be technically insolvent.")
+
+    # ── Borrowings sign check ─────────────────────────────────────────────────
+    if fd.long_term_borrowings() < 0:
+        vr.warning("Data Quality",
+                   f"Long-term borrowings net is negative (₹{fd.long_term_borrowings():,.0f})",
+                   "Secured/Unsecured Loan ledgers have a net debit balance. "
+                   "Check if loan repayments exceeded drawdowns or if ledgers are miscoded.")
+
+    # ── Period check ──────────────────────────────────────────────────────────
+    try:
+        pf = date.fromisoformat(fd.period_from)
+        pt = date.fromisoformat(fd.period_to)
+        days = (pt - pf).days
+        if days < 300 or days > 400:
+            vr.warning("Data Quality",
+                       f"Period is {days} days ({fd.period_from} → {fd.period_to})",
+                       "Expected a 12-month financial year (365 days). "
+                       "Projections assume a full year as the base period.")
+    except (ValueError, TypeError):
+        vr.warning("Schema", "Could not parse period dates from _export_info.")
+
+    # ── Significant ledgers with no BS/PL classification ─────────────────────
+    unclass = [l for l in fd.ledgers
+               if l.primary_group not in BS_MAP
+               and l.primary_group not in PNL_MAP
+               and abs(l.closing) > 50_000]
+    if unclass:
+        examples = "; ".join(f"{l.name} (₹{l.closing:,.0f})" for l in unclass[:4])
+        vr.warning("Classification",
+                   f"{len(unclass)} ledger(s) with material balances are unclassified",
+                   f"Examples: {examples}")
+
+    return vr
+
+
 # ─── Database loader ──────────────────────────────────────────────────────────
 
 def load_from_sqlite(db_path: str,
                      opening_stock_override: float | None = None,
-                     closing_stock_override: float | None = None) -> FinancialData:
+                     closing_stock_override: float | None = None,
+                     schema_vr: ValidationResult | None = None) -> FinancialData:
+    """Load financial data from a Tally SQLite export.
+
+    Raises RuntimeError if schema validation finds blocking errors.
+    Non-fatal warnings are accumulated into schema_vr (passed in or a new one).
+    """
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
 
+    # Schema validation — fail fast on missing tables / columns
+    sv = validate_schema(con)
+    if schema_vr is not None:
+        schema_vr.checks.extend(sv.checks)
+    if sv.has_errors:
+        con.close()
+        msgs = "; ".join(c.message for c in sv.errors)
+        raise RuntimeError(f"Database schema errors: {msgs}")
+
     # Company / period (_export_info uses name/value columns)
-    info = {r["name"]: r["value"]
-            for r in con.execute("SELECT name, value FROM _export_info")}
+    try:
+        info = {r["name"]: r["value"]
+                for r in con.execute("SELECT name, value FROM _export_info")}
+    except Exception:
+        info = {}
     company     = info.get("company_name", "Company").replace("(from", "").replace(")", "").strip()
     period_from = info.get("period_from", "")
     period_to   = info.get("period_to",   "")
@@ -406,23 +682,42 @@ def load_from_sqlite(db_path: str,
             return dt_str
     period_label = _ordinal(period_to)
 
+    # Detect whether opening_balance column exists (older exports may omit it)
+    ledger_cols = {r[1] for r in con.execute("PRAGMA table_info(mst_ledger)")}
+    has_opening = "opening_balance" in ledger_cols
+
     # Profit & Loss A/c (special ledger, no parent group)
     # closing_balance = cumulative (prior year opening + current year profit)
     # opening_balance = prior year retained earnings not yet transferred to Reserves
-    pnl_row = con.execute(
-        "SELECT opening_balance, closing_balance FROM mst_ledger WHERE name = 'Profit & Loss A/c'"
-    ).fetchone()
-    pnl_balance  = float(pnl_row["closing_balance"]) if pnl_row else 0.0
-    pnl_opening  = float(pnl_row["opening_balance"]) if pnl_row else 0.0
+    pnl_balance = 0.0
+    pnl_opening = 0.0
+    try:
+        if has_opening:
+            pnl_row = con.execute(
+                "SELECT opening_balance, closing_balance FROM mst_ledger "
+                "WHERE name = 'Profit & Loss A/c'"
+            ).fetchone()
+            if pnl_row:
+                pnl_balance = safe_float(pnl_row["closing_balance"])
+                pnl_opening = safe_float(pnl_row["opening_balance"])
+        else:
+            pnl_row = con.execute(
+                "SELECT closing_balance FROM mst_ledger WHERE name = 'Profit & Loss A/c'"
+            ).fetchone()
+            if pnl_row:
+                pnl_balance = safe_float(pnl_row["closing_balance"])
+    except Exception:
+        pass   # pnl_balance stays 0
 
     # Balance-sheet ledgers from mst_ledger (closing balances = year-end positions)
-    bs_rows = con.execute("""
+    open_col = "l.opening_balance" if has_opening else "'0'"
+    bs_rows = con.execute(f"""
         SELECT
             l.name,
             l.parent,
             g.primary_group,
-            CAST(COALESCE(l.opening_balance, '0') AS REAL) AS opening,
-            CAST(COALESCE(l.closing_balance, '0') AS REAL) AS closing,
+            {open_col} AS opening_raw,
+            l.closing_balance AS closing_raw,
             COALESCE(g.is_deemedpositive, '0') AS is_dp
         FROM mst_ledger l
         LEFT JOIN mst_group g ON g.name = l.parent
@@ -435,40 +730,44 @@ def load_from_sqlite(db_path: str,
             name=r["name"],
             parent=r["parent"],
             primary_group=r["primary_group"],
-            opening=float(r["opening"]),
-            closing=float(r["closing"]),
+            opening=safe_float(r["opening_raw"]),
+            closing=safe_float(r["closing_raw"]),
             is_deemedpositive=str(r["is_dp"]) == "1",
         )
         for r in bs_rows
     ]
 
-    # P&L activity from trn_accounting — the REAL year's revenue/expense amounts.
-    # mst_ledger.closing_balance for P&L accounts is net outstanding, not activity.
+    # P&L activity from trn_accounting (kept for future use / cross-checks).
+    # The primary P&L computation uses mst_ledger closing_balance instead
+    # because trn_accounting includes journal/inter-branch entries that Tally
+    # excludes from its own P&L report.
     pnl_groups = (
         "'Sales Accounts','Direct Incomes','Indirect Incomes',"
         "'Purchase Accounts','Direct Expenses','Indirect Expenses'"
     )
-    pnl_txn_rows = con.execute(f"""
-        SELECT
-            g.primary_group,
-            l.parent,
-            SUM(CAST(a.amount AS REAL)) AS total
-        FROM trn_accounting a
-        JOIN mst_ledger l ON l.name = a.ledger
-        LEFT JOIN mst_group g ON g.name = l.parent
-        WHERE g.primary_group IN ({pnl_groups})
-        GROUP BY g.primary_group, l.parent
-        ORDER BY g.primary_group, l.parent
-    """).fetchall()
-
-    pnl_rows = [
-        PnlRow(
-            primary_group=r["primary_group"],
-            parent=r["parent"],
-            total=float(r["total"] or 0),
-        )
-        for r in pnl_txn_rows
-    ]
+    try:
+        pnl_txn_rows = con.execute(f"""
+            SELECT
+                g.primary_group,
+                l.parent,
+                SUM(CAST(a.amount AS REAL)) AS total
+            FROM trn_accounting a
+            JOIN mst_ledger l ON l.name = a.ledger
+            LEFT JOIN mst_group g ON g.name = l.parent
+            WHERE g.primary_group IN ({pnl_groups})
+            GROUP BY g.primary_group, l.parent
+            ORDER BY g.primary_group, l.parent
+        """).fetchall()
+        pnl_rows = [
+            PnlRow(
+                primary_group=r["primary_group"],
+                parent=r["parent"],
+                total=float(r["total"] or 0),
+            )
+            for r in pnl_txn_rows
+        ]
+    except Exception:
+        pnl_rows = []   # trn_accounting absent or malformed — non-fatal
 
     con.close()
     return FinancialData(
@@ -538,7 +837,60 @@ class ExcelWriter:
             self._write_proj_pnl(pe)
             self._write_proj_bs(pe)
             self._write_assumptions()
+        vr = validate_financial_data(self.fd)
+        self._write_validation(vr)
         self.wb.save(path)
+
+    # ── Validation sheet ──────────────────────────────────────────────────────
+
+    def _write_validation(self, vr: ValidationResult) -> None:
+        ws = self.wb.create_sheet("Validation")
+        ws.column_dimensions["A"].width = 12
+        ws.column_dimensions["B"].width = 20
+        ws.column_dimensions["C"].width = 50
+        ws.column_dimensions["D"].width = 60
+
+        # Header
+        ws.merge_cells("A1:D1")
+        ws["A1"].value = f"DATA VALIDATION REPORT — {self.fd.company} — {self.fd.period_label}"
+        ws["A1"].font = _font(bold=True, size=12, color=C_WHITE)
+        ws["A1"].fill = _fill(C_HEADER_BG)
+        ws["A1"].alignment = _align("center")
+
+        ws["A2"].value = vr.summary()
+        ws["A2"].font = _font(bold=True, size=11,
+                              color="CC0000" if vr.has_errors else "2E7D32")
+        ws.merge_cells("A2:D2")
+        ws["A2"].alignment = _align("center")
+
+        # Column headers
+        for col, lbl in [("A", "Severity"), ("B", "Category"),
+                          ("C", "Message"), ("D", "Detail")]:
+            ws[f"{col}3"].value = lbl
+            ws[f"{col}3"].font = _font(bold=True, size=9, color=C_WHITE)
+            ws[f"{col}3"].fill = _fill(C_MID_BLUE)
+            ws[f"{col}3"].alignment = _align("center")
+            ws[f"{col}3"].border = _border()
+
+        _SEVERITY_COLORS = {ERROR: "FFCCCC", WARNING: C_AMBER, INFO: "E8F5E9"}
+        _SEVERITY_FG     = {ERROR: "CC0000", WARNING: "7B5800", INFO: "1B5E20"}
+
+        for i, chk in enumerate(vr.checks, start=4):
+            bg = _SEVERITY_COLORS.get(chk.severity, C_WHITE)
+            fg = _SEVERITY_FG.get(chk.severity, C_BLACK)
+            for col, val in [("A", chk.severity), ("B", chk.category),
+                              ("C", chk.message),  ("D", chk.detail)]:
+                cell = ws[f"{col}{i}"]
+                cell.value = val
+                cell.fill = _fill(bg)
+                cell.font = _font(size=9,
+                                  bold=(col == "A"),
+                                  color=fg if col == "A" else C_BLACK)
+                cell.alignment = _align("left", wrap=True)
+                cell.border = _border()
+            ws.row_dimensions[i].height = 28
+
+        ws.freeze_panes = "A4"
 
     # ── Balance Sheet ─────────────────────────────────────────────────────────
 
@@ -1503,6 +1855,7 @@ class App:
 
         self._build_actual_tab()
         self._build_proj_tab()
+        self._build_validation_tab()
 
         # ── Status + action ───────────────────────────────────────────────────
         bottom = ttk.Frame(main)
@@ -1638,6 +1991,43 @@ class App:
         ttk.Button(btn_frame, text="Projections Only",
                    command=self._gen_proj_only, style="TButton").pack(side="right", padx=(0,8))
 
+    def _build_validation_tab(self) -> None:
+        tab = ttk.Frame(self.nb, padding=8)
+        self.nb.add(tab, text="Validation")
+        tab.rowconfigure(1, weight=1)
+        tab.columnconfigure(0, weight=1)
+
+        top = ttk.Frame(tab)
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self.val_summary = ttk.Label(top,
+            text="Load a database file to see validation results.",
+            font=("Calibri", 10, "bold"), foreground="#2F5496")
+        self.val_summary.pack(side="left")
+        ttk.Button(top, text="Re-run Validation",
+                   command=self._run_validation).pack(side="right")
+
+        cols = ("Severity", "Category", "Message", "Detail")
+        tree = ttk.Treeview(tab, columns=cols, show="headings", height=20)
+        tree.heading("Severity",  text="Severity",  anchor="center")
+        tree.heading("Category",  text="Category",  anchor="w")
+        tree.heading("Message",   text="Message",   anchor="w")
+        tree.heading("Detail",    text="Detail",    anchor="w")
+        tree.column("Severity",  width=80,  stretch=False, anchor="center")
+        tree.column("Category",  width=130, stretch=False)
+        tree.column("Message",   width=320)
+        tree.column("Detail",    width=380)
+
+        tree.tag_configure("ERROR",   background="#FFCCCC", foreground="#CC0000")
+        tree.tag_configure("WARNING", background="#FFF2CC", foreground="#7B5800")
+        tree.tag_configure("INFO",    background="#E8F5E9", foreground="#1B5E20")
+
+        vsb = ttk.Scrollbar(tab, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.grid(row=1, column=0, sticky="nsew")
+        vsb.grid(row=1, column=1, sticky="ns")
+
+        self.val_tree = tree
+
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _set_status(self, msg: str) -> None:
@@ -1671,8 +2061,26 @@ class App:
                 f"Loaded: {self.fd.company}  |  {self.fd.period_from} → {self.fd.period_to}"
             )
             self._preview_actual()
+            self._run_validation()
         except Exception as e:
             messagebox.showerror("Load Error", str(e))
+
+    def _run_validation(self) -> None:
+        fd = self.fd
+        if fd is None:
+            return
+        vr = validate_financial_data(fd)
+        # Populate treeview
+        for item in self.val_tree.get_children():
+            self.val_tree.delete(item)
+        for chk in vr.checks:
+            self.val_tree.insert("", "end",
+                values=(chk.severity, chk.category, chk.message, chk.detail),
+                tags=(chk.severity,))
+        # Update summary label
+        summary = vr.summary()
+        color = "#CC0000" if vr.has_errors else ("#7B5800" if vr.warnings else "#1B5E20")
+        self.val_summary.configure(text=summary, foreground=color)
 
     def _parse_stock(self, val: str) -> float | None:
         val = val.strip().replace(",", "")
