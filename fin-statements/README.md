@@ -6,6 +6,44 @@ A standalone Python desktop app that reads a **Tally SQLite export** (produced b
 
 ---
 
+## Download
+
+**[⬇ Download latest release (ZIP)](https://github.com/dhruvdua88/finanalyzer/releases/latest)**
+
+The ZIP contains everything you need: the app, a one-click Mac launcher, and a one-click Windows launcher. No coding required.
+
+---
+
+## Install & Run (no coding needed)
+
+### Mac
+
+1. Download the ZIP from the link above and unzip it anywhere (e.g. your Desktop)
+2. Right-click **`run_mac.command`** → **Open** → click **Open** in the security dialog  
+   *(first time only — macOS flags new downloads; after that you can double-click directly)*
+3. A Terminal window opens, installs the one dependency automatically, then launches the app
+4. The Terminal window can be closed once the app window appears
+
+> **No Python?** The launcher will open `python.org/downloads` for you automatically.
+
+### Windows
+
+1. Download the ZIP and unzip it anywhere
+2. Double-click **`run_windows.bat`**
+3. A Command Prompt window installs the dependency then opens the app
+4. The Command Prompt can be closed once the app appears
+
+> **No Python?** The launcher opens `python.org/downloads` and explains what to tick ("Add Python to PATH").
+
+### Manual (for developers)
+
+```bash
+pip install openpyxl
+python financial_statements.py
+```
+
+---
+
 ## Features
 
 | Area | Detail |
