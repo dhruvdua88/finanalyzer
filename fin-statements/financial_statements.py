@@ -429,6 +429,56 @@ class ValidationResult:
 
 # ── Amount parser ─────────────────────────────────────────────────────────────
 
+_INFER_KEYWORDS: list[tuple[list[str], str]] = [
+    # P&L — Revenue
+    (["sales account", "sales accounts", "revenue", "turnover"], "Sales Accounts"),
+    (["direct income", "direct incomes"],                         "Direct Incomes"),
+    (["indirect income", "indirect incomes", "other income"],     "Indirect Incomes"),
+    # P&L — Expenses
+    (["purchase account", "purchase accounts"],                   "Purchase Accounts"),
+    (["direct expense", "direct expenses"],                       "Direct Expenses"),
+    (["indirect expense", "indirect expenses"],                   "Indirect Expenses"),
+    (["expense", "expenditure", "cost", "consumption"],           "Indirect Expenses"),
+    # BS — Assets
+    (["fixed asset", "tangible asset", "intangible asset",
+      "capital work", "cwip"],                                     "Fixed Assets"),
+    (["investment"],                                               "Investments"),
+    (["stock", "inventory", "inventories"],                       "Stock-in-hand"),
+    (["sundry debtor", "trade receivable", "debtor"],             "Sundry Debtors"),
+    (["cash-in-hand", "cash in hand", "petty cash"],              "Cash-in-hand"),
+    (["bank account", "bank"],                                    "Bank Accounts"),
+    (["loan and advance", "loans and advance", "advance"],        "Loans & Advances (Asset)"),
+    (["deposit"],                                                  "Deposits (Asset)"),
+    (["current asset"],                                           "Current Assets"),
+    (["misc. expense", "deferred expense", "preliminary"],        "Misc. Expenses (ASSET)"),
+    # BS — Equity
+    (["share capital", "equity capital", "paid-up capital",
+      "capital account"],                                          "Capital Account"),
+    (["reserve", "surplus"],                                      "Reserves & Surplus"),
+    # BS — Liabilities
+    (["secured loan", "term loan", "vehicle loan"],               "Secured Loans"),
+    (["unsecured loan"],                                           "Unsecured Loans"),
+    (["bank od", "overdraft", "cc limit", "cash credit",
+      "working capital loan"],                                     "Bank OD A/c"),
+    (["sundry creditor", "trade payable", "creditor"],            "Sundry Creditors"),
+    (["provision"],                                                "Provisions"),
+    (["duties", "taxes payable", "gst", "tds payable"],          "Duties & Taxes"),
+    (["current liabilit", "other liabilit"],                      "Current Liabilities"),
+    (["branch", "division"],                                      "Branch / Divisions"),
+    (["suspense"],                                                 "Suspense A/c"),
+]
+
+def infer_standard_group(primary: str, parents: set[str]) -> str | None:
+    """Heuristically map an unknown primary group to the nearest BS_MAP / PNL_MAP key.
+    Returns None if no confident match is found.
+    """
+    text = f"{primary} {' '.join(parents)}".lower()
+    for keywords, target in _INFER_KEYWORDS:
+        if any(kw in text for kw in keywords):
+            return target
+    return None
+
+
 def safe_float(value: Any, default: float = 0.0) -> float:
     """Parse a Tally TEXT amount field robustly.
 
@@ -635,6 +685,42 @@ def validate_financial_data(fd: "FinancialData") -> ValidationResult:
                    f"{len(unclass)} ledger(s) with material balances are unclassified",
                    f"Examples: {examples}")
 
+    # ── Per-ledger sign/stale checks (from BalanceSheetCleanlinessAnalytics) ──
+    asset_groups = {pg for pg, (side, _, _) in BS_MAP.items() if side in ("noncurrent_asset", "current_asset")}
+    liab_groups  = {pg for pg, (side, _, _) in BS_MAP.items() if side in ("equity", "noncurrent_liab", "current_liab")}
+
+    sign_flips, natural_breaches, stale = [], [], []
+    for l in fd.ledgers:
+        # Sign flip: opening and closing have opposite signs
+        if abs(l.opening) > 1 and abs(l.closing) > 1 and l.opening * l.closing < 0:
+            sign_flips.append(l.name)
+
+        # Natural sign breach: asset with credit balance or liability with debit balance
+        if l.primary_group in asset_groups and l.closing > 1_000:
+            natural_breaches.append(f"{l.name} (asset with credit balance ₹{l.closing:,.0f})")
+        if l.primary_group in liab_groups and l.closing < -1_000:
+            natural_breaches.append(f"{l.name} (liability with debit balance ₹{l.closing:,.0f})")
+
+        # Stale: large balance but opening == closing (no movement)
+        if abs(l.closing) >= 100_000 and abs(l.opening - l.closing) < 1 and l.opening != 0:
+            stale.append(f"{l.name} (₹{l.closing:,.0f})")
+
+    if sign_flips:
+        examples = "; ".join(sign_flips[:3])
+        vr.warning("Data Quality",
+                   f"{len(sign_flips)} ledger(s) have sign flips (opening/closing opposite signs)",
+                   f"Examples: {examples}")
+    if natural_breaches:
+        examples = "; ".join(natural_breaches[:3])
+        vr.warning("Data Quality",
+                   f"{len(natural_breaches)} ledger(s) breach their natural sign",
+                   f"Examples: {examples}")
+    if stale:
+        examples = "; ".join(stale[:3])
+        vr.info("Data Quality",
+                f"{len(stale)} ledger(s) have large stale balances (no movement in period)",
+                f"Examples: {examples}")
+
     return vr
 
 
@@ -643,7 +729,8 @@ def validate_financial_data(fd: "FinancialData") -> ValidationResult:
 def load_from_sqlite(db_path: str,
                      opening_stock_override: float | None = None,
                      closing_stock_override: float | None = None,
-                     schema_vr: ValidationResult | None = None) -> FinancialData:
+                     schema_vr: ValidationResult | None = None,
+                     reclassify_map: dict[str, str] | None = None) -> FinancialData:
     """Load financial data from a Tally SQLite export.
 
     Raises RuntimeError if schema validation finds blocking errors.
@@ -725,17 +812,34 @@ def load_from_sqlite(db_path: str,
         ORDER BY g.primary_group, l.parent, l.name
     """).fetchall()
 
-    ledgers = [
-        LedgerRow(
+    # Build parent sets per primary for auto-inference
+    _pg_parents: dict[str, set[str]] = {}
+    for r in bs_rows:
+        pg = r["primary_group"]
+        if pg:
+            _pg_parents.setdefault(pg, set()).add(str(r["parent"] or ""))
+
+    effective_remap = dict(reclassify_map or {})
+
+    ledgers = []
+    for r in bs_rows:
+        pg = r["primary_group"]
+        # Apply user reclassification first
+        if pg in effective_remap:
+            pg = effective_remap[pg]
+        # Auto-infer for groups still not in any map
+        elif pg not in BS_MAP and pg not in PNL_MAP:
+            inferred = infer_standard_group(pg, _pg_parents.get(r["primary_group"], set()))
+            if inferred:
+                pg = inferred
+        ledgers.append(LedgerRow(
             name=r["name"],
             parent=r["parent"],
-            primary_group=r["primary_group"],
+            primary_group=pg,
             opening=safe_float(r["opening_raw"]),
             closing=safe_float(r["closing_raw"]),
             is_deemedpositive=str(r["is_dp"]) == "1",
-        )
-        for r in bs_rows
-    ]
+        ))
 
     # P&L activity from trn_accounting (kept for future use / cross-checks).
     # The primary P&L computation uses mst_ledger closing_balance instead
@@ -832,6 +936,17 @@ class ExcelWriter:
     def save(self, path: str) -> None:
         self._write_bs()
         self._write_pnl()
+        # Note sheets (referenced by hyperlinks in BS face)
+        self._write_note_share_capital()
+        self._write_note_reserves()
+        self._write_note_lt_borrowings()
+        self._write_note_st_borrowings()
+        self._write_note_trade_payables()
+        self._write_note_fixed_assets()
+        self._write_note_inventories()
+        self._write_note_trade_receivables()
+        self._write_note_cash_bank()
+        self._write_notes_index()
         if self.proj:
             pe = ProjectionEngine(self.fd, self.proj)
             self._write_proj_pnl(pe)
@@ -944,9 +1059,11 @@ class ExcelWriter:
             ws[f"A{r}"].font = _font(bold=bold or total, size=10)
             ws[f"A{r}"].alignment = _align("left")
             if note:
+                note_sheet_name = self._note_sheet_name(int(note))
                 ws[f"B{r}"].value = note
+                ws[f"B{r}"].hyperlink = f"#'{note_sheet_name}'!A1"
+                ws[f"B{r}"].font = Font(name="Calibri", size=9, color="1D4ED8", underline="single")
                 ws[f"B{r}"].alignment = _align("center")
-                ws[f"B{r}"].font = _font(size=9)
             if amount is not None:
                 ws[f"C{r}"].value = amount
                 ws[f"C{r}"].number_format = fmt
@@ -1055,139 +1172,233 @@ class ExcelWriter:
             ws[f"C{r-1}"].font = Font(bold=True, size=10, color=C_WHITE)
         spacer(); spacer()
 
-        # ── Notes ─────────────────────────────────────────────────────────────
-        def note_header(num: int, title: str):
-            nonlocal r
-            ws.merge_cells(f"A{r}:D{r}")
-            c = ws[f"A{r}"]
-            c.value = f"Note {num}:  {title}"
-            c.font = _font(bold=True, size=10)
-            c.fill = _fill(C_SUBHD_BG)
-            c.border = _border()
-            r += 1
+        ws.freeze_panes = "A6"
 
-        def note_row(label: str, amount: float | None = None, bold=False, total=False):
-            nonlocal r
-            ws[f"A{r}"].value = "    " + label
-            ws[f"A{r}"].font = _font(bold=bold or total, size=9)
-            if amount is not None:
-                ws[f"C{r}"].value = amount
-                ws[f"C{r}"].number_format = INR
-                ws[f"C{r}"].font = _font(bold=bold or total, size=9)
-                ws[f"C{r}"].alignment = _align("right")
-            if total:
-                ws[f"A{r}"].fill = _fill(C_TOTAL_BG)
-                ws[f"C{r}"].fill = _fill(C_TOTAL_BG)
-            r += 1
+    # ── Note sheet helpers ────────────────────────────────────────────────────
 
-        # Note 1 – Share Capital
-        note_header(1, "Share Capital")
+    def _note_sheet_name(self, note_num: int | str) -> str:
+        """Return the sheet name for a given note number."""
+        _NOTE_TITLES = {
+            1: "N1 Share Capital",
+            2: "N2 Reserves Surplus",
+            3: "N3 LT Borrowings",
+            4: "N4 ST Borrowings",
+            5: "N5 Trade Payables",
+            6: "N6 Other CL",
+            7: "N7 Provisions",
+            8: "N8 Fixed Assets",
+            9: "N9 NC Investments",
+            10: "N10 LT Loans",
+            11: "N11 Inventories",
+            12: "N12 Trade Receivables",
+            13: "N13 Cash & Bank",
+            14: "N14 Other CA",
+        }
+        return _NOTE_TITLES.get(int(note_num), f"Note {note_num}")
+
+    def _start_note_sheet(self, note_num: int, title: str) -> tuple:
+        """Create a note sheet, write header + back link, return (ws, next_row)."""
+        sheet_name = self._note_sheet_name(note_num)
+        ws = self.wb.create_sheet(sheet_name)
+        ws.column_dimensions["A"].width = 46
+        ws.column_dimensions["B"].width = 20
+        ws.column_dimensions["C"].width = 20
+
+        # Title row
+        ws.merge_cells("A1:C1")
+        ws["A1"].value = f"Note {note_num}:  {title}"
+        ws["A1"].font = Font(name="Calibri", bold=True, size=11, color=C_WHITE)
+        ws["A1"].fill = _fill(C_HEADER_BG)
+        ws["A1"].alignment = _align("center")
+
+        # Back link
+        ws.merge_cells("A2:C2")
+        ws["A2"].value = "<- Back to Balance Sheet"
+        ws["A2"].hyperlink = "#'Balance Sheet'!A1"
+        ws["A2"].font = Font(name="Calibri", size=9, color="1D4ED8", underline="single")
+        ws["A2"].alignment = _align("left")
+
+        return ws, 3   # next row to write at
+
+    def _note_data_row(self, ws, r: int, label: str, amount: float | None = None,
+                       bold: bool = False, total: bool = False, indent: int = 0) -> int:
+        prefix = "    " * indent
+        ws[f"A{r}"].value = prefix + label
+        ws[f"A{r}"].font = _font(bold=bold or total, size=9)
+        if amount is not None:
+            ws[f"B{r}"].value = amount
+            ws[f"B{r}"].number_format = INR
+            ws[f"B{r}"].font = _font(bold=bold or total, size=9)
+            ws[f"B{r}"].alignment = _align("right")
+        if total:
+            ws[f"A{r}"].fill = _fill(C_TOTAL_BG)
+            ws[f"B{r}"].fill = _fill(C_TOTAL_BG)
+        return r + 1
+
+    def _write_note_share_capital(self):
+        ws, r = self._start_note_sheet(1, "Share Capital")
+        fd = self.fd
         for l in fd._ledgers_for("Capital Account"):
             if "reserve" not in l.name.lower() and "profit" not in l.name.lower():
-                note_row(l.name, l.closing)
-        note_row("Total Share Capital", fd.share_capital(), total=True)
-        spacer()
+                r = self._note_data_row(ws, r, l.name, l.closing)
+        r = self._note_data_row(ws, r, "Total Share Capital", fd.share_capital(), total=True)
 
-        # Note 2 – Reserves & Surplus
-        note_header(2, "Reserves & Surplus")
+    def _write_note_reserves(self):
+        ws, r = self._start_note_sheet(2, "Reserves & Surplus")
+        fd = self.fd
         for l in fd._ledgers_for("Capital Account"):
             if "reserve" in l.name.lower():
-                note_row(l.name, l.closing)
+                r = self._note_data_row(ws, r, l.name, l.closing)
         for l in fd._ledgers_for("Reserves & Surplus"):
-            note_row(l.name, l.closing)
-        note_row("Profit for the year (from P&L)", fd.pnl_balance)
-        note_row("Total Reserves & Surplus", fd.reserves_surplus(), total=True)
-        spacer()
+            r = self._note_data_row(ws, r, l.name, l.closing)
+        r = self._note_data_row(ws, r, "Profit for the year (P&L A/c)", fd.pnl_balance)
+        r = self._note_data_row(ws, r, "Total Reserves & Surplus", fd.reserves_surplus(), total=True)
 
-        # Note 3 – Long-Term Borrowings
-        note_header(3, "Long-Term Borrowings")
-        note_row("Secured Loans")
-        for l in fd._ledgers_for("Secured Loans"):
-            note_row("  " + l.name, l.closing)
-        note_row("Unsecured Loans")
-        for l in fd._ledgers_for("Unsecured Loans"):
-            note_row("  " + l.name, l.closing)
-        note_row("Total Long-Term Borrowings", fd.long_term_borrowings(), total=True)
-        spacer()
+    def _write_note_lt_borrowings(self):
+        ws, r = self._start_note_sheet(3, "Long-Term Borrowings")
+        fd = self.fd
+        for pg in ("Secured Loans", "Unsecured Loans", "Loans (Liability)"):
+            group_ledgers = fd._ledgers_for(pg)
+            if not group_ledgers:
+                continue
+            r = self._note_data_row(ws, r, pg, bold=True)
+            for l in group_ledgers:
+                r = self._note_data_row(ws, r, l.name, l.closing, indent=1)
+        r = self._note_data_row(ws, r, "Total Long-Term Borrowings", fd.long_term_borrowings(), total=True)
 
-        # Note 4 – Short-Term Borrowings
-        note_header(4, "Short-Term Borrowings (Bank OD / CC)")
+    def _write_note_st_borrowings(self):
+        ws, r = self._start_note_sheet(4, "Short-Term Borrowings")
+        fd = self.fd
         for l in fd._ledgers_for("Bank OD A/c"):
-            note_row(l.name, l.closing)
-        note_row("Total Short-Term Borrowings", fd.short_term_borrowings(), total=True)
-        spacer()
+            r = self._note_data_row(ws, r, l.name, l.closing)
+        # Bank accounts with credit balance = OD
+        od_banks = [l for l in fd._ledgers_for("Bank Accounts") if l.closing > 0]
+        if od_banks:
+            r = self._note_data_row(ws, r, "Bank Accounts (credit/OD balance)", bold=True)
+            for l in od_banks:
+                r = self._note_data_row(ws, r, l.name, l.closing, indent=1)
+        r = self._note_data_row(ws, r, "Total Short-Term Borrowings",
+                                fd.short_term_borrowings() + fd.bank_od_in_bank_accounts(), total=True)
 
-        # Note 5 – Trade Payables
-        note_header(5, "Trade Payables")
+    def _write_note_trade_payables(self):
+        ws, r = self._start_note_sheet(5, "Trade Payables")
+        fd = self.fd
         by_parent: dict[str, float] = {}
         for l in fd._ledgers_for("Sundry Creditors"):
             by_parent[l.parent] = by_parent.get(l.parent, 0) + l.closing
         for parent, amt in sorted(by_parent.items()):
-            note_row(parent, amt if amt > 0 else None)
-        note_row("Total Trade Payables", fd.trade_payables(), total=True)
-        spacer()
+            r = self._note_data_row(ws, r, parent, amt if amt > 0 else None)
+        r = self._note_data_row(ws, r, "Total Trade Payables", fd.trade_payables(), total=True)
 
-        # Note 8 – Fixed Assets Schedule
-        note_header(8, "Fixed Assets")
-        ws[f"A{r}"].value = "Asset Category"
-        for col, lbl in [("B", "Gross Open"), ("C", "Gross Close"),
-                          ("D", "Accum Depr"), ("E", "Net Block")]:
-            ws.column_dimensions[col].width = 16
+    def _write_note_fixed_assets(self):
+        ws, r = self._start_note_sheet(8, "Fixed Assets")
+        fd = self.fd
+        # Column headers
+        for col, lbl in [("A", "Asset Category"), ("B", "Gross Open"), ("C", "Additions"),
+                         ("D", "Disposals"), ("E", "Gross Close"), ("F", "Accum Depr"), ("G", "Net Block")]:
+            ws.column_dimensions[col].width = 18
             ws[f"{col}{r}"].value = lbl
-            ws[f"{col}{r}"].font = _font(bold=True, size=9)
-            ws[f"{col}{r}"].fill = _fill(C_SUBHD_BG)
-            ws[f"{col}{r}"].alignment = _align("center")
+            ws[f"{col}{r}"].font = _font(bold=True, size=9, color=C_WHITE)
+            ws[f"{col}{r}"].fill = _fill(C_MID_BLUE)
+            ws[f"{col}{r}"].alignment = _align("center" if col != "A" else "left")
         r += 1
         for fa in fd.fixed_assets_schedule():
-            ws[f"A{r}"].value = "    " + fa["name"]
+            ws[f"A{r}"].value = "  " + fa["name"]
             ws[f"A{r}"].font = _font(size=9)
-            ws[f"B{r}"].value = fa["gross_open"];  ws[f"B{r}"].number_format = INR
-            ws[f"C{r}"].value = fa["gross_close"]; ws[f"C{r}"].number_format = INR
-            ws[f"D{r}"].value = fa["depr_close"];  ws[f"D{r}"].number_format = INR
-            ws[f"E{r}"].value = fa["net_close"];   ws[f"E{r}"].number_format = INR
-            for col in "BCDE":
+            for col, key in [("B","gross_open"),("C","additions"),("D","disposals"),
+                              ("E","gross_close"),("F","depr_close"),("G","net_close")]:
+                ws[f"{col}{r}"].value = fa[key]
+                ws[f"{col}{r}"].number_format = INR
                 ws[f"{col}{r}"].font = _font(size=9)
                 ws[f"{col}{r}"].alignment = _align("right")
             r += 1
         # Total row
-        ws[f"A{r}"].value = "    Total Fixed Assets (Net)"
+        ws[f"A{r}"].value = "  TOTAL"
         ws[f"A{r}"].font = _font(bold=True, size=9)
-        ws[f"E{r}"].value = fd.net_fixed_assets()
-        ws[f"E{r}"].number_format = INR
-        ws[f"E{r}"].font = _font(bold=True, size=9)
-        ws[f"E{r}"].fill = _fill(C_TOTAL_BG)
+        ws[f"G{r}"].value = fd.net_fixed_assets()
+        ws[f"G{r}"].number_format = INR
+        ws[f"G{r}"].font = _font(bold=True, size=9)
+        ws[f"G{r}"].fill = _fill(C_TOTAL_BG)
         ws[f"A{r}"].fill = _fill(C_TOTAL_BG)
-        r += 1; r += 1
 
-        # Note 11 – Inventories
-        note_header(11, "Inventories")
-        note_row("Opening Stock",  fd.opening_stock())
-        note_row("Closing Stock (as per books / entered)", fd.closing_stock())
-        note_row("Net Inventory on Balance Sheet", fd.closing_stock(), total=True)
-        spacer()
+    def _write_note_inventories(self):
+        ws, r = self._start_note_sheet(11, "Inventories")
+        fd = self.fd
+        r = self._note_data_row(ws, r, "Opening Stock (as per books / override)", fd.opening_stock())
+        r = self._note_data_row(ws, r, "Closing Stock (as per books / override)", fd.closing_stock())
+        r = self._note_data_row(ws, r, "Net Inventory on Balance Sheet", fd.closing_stock(), total=True)
 
-        # Note 12 – Trade Receivables
-        note_header(12, "Trade Receivables")
-        by_parent_dr: dict[str, float] = {}
+    def _write_note_trade_receivables(self):
+        ws, r = self._start_note_sheet(12, "Trade Receivables")
+        fd = self.fd
+        by_parent: dict[str, float] = {}
         for l in fd._ledgers_for("Sundry Debtors"):
-            by_parent_dr[l.parent] = by_parent_dr.get(l.parent, 0) + (-l.closing)
-        for parent, amt in sorted(by_parent_dr.items()):
-            note_row(parent, amt if abs(amt) > 0 else None)
-        note_row("Total Trade Receivables", fd.trade_receivables(), total=True)
-        spacer()
+            by_parent[l.parent] = by_parent.get(l.parent, 0) + (-l.closing)
+        for parent, amt in sorted(by_parent.items()):
+            r = self._note_data_row(ws, r, parent, amt if abs(amt) > 0 else None)
+        r = self._note_data_row(ws, r, "Total Trade Receivables", fd.trade_receivables(), total=True)
 
-        # Note 13 – Cash & Cash Equivalents
-        note_header(13, "Cash & Cash Equivalents")
-        note_row("Cash-in-hand")
-        for l in fd._ledgers_for("Cash-in-hand"):
-            note_row("  " + l.name, -l.closing)
-        note_row("Bank Accounts")
-        for l in fd._ledgers_for("Bank Accounts"):
-            note_row("  " + l.name, -l.closing)
-        note_row("Total Cash & Cash Equivalents", fd.cash_and_bank(), total=True)
-        spacer()
+    def _write_note_cash_bank(self):
+        ws, r = self._start_note_sheet(13, "Cash & Cash Equivalents")
+        fd = self.fd
+        if fd._ledgers_for("Cash-in-hand"):
+            r = self._note_data_row(ws, r, "Cash-in-Hand", bold=True)
+            for l in fd._ledgers_for("Cash-in-hand"):
+                r = self._note_data_row(ws, r, l.name, -l.closing, indent=1)
+        asset_banks = [l for l in fd._ledgers_for("Bank Accounts") if l.closing < 0]
+        if asset_banks:
+            r = self._note_data_row(ws, r, "Bank Accounts (debit balance)", bold=True)
+            for l in asset_banks:
+                r = self._note_data_row(ws, r, l.name, -l.closing, indent=1)
+        r = self._note_data_row(ws, r, "Total Cash & Cash Equivalents", fd.cash_and_bank(), total=True)
 
-        ws.freeze_panes = "A6"
+    def _write_notes_index(self):
+        ws = self.wb.create_sheet("Notes Index")
+        ws.column_dimensions["A"].width = 12
+        ws.column_dimensions["B"].width = 35
+        ws.column_dimensions["C"].width = 20
+
+        ws.merge_cells("A1:C1")
+        ws["A1"].value = "NOTES TO FINANCIAL STATEMENTS"
+        ws["A1"].font = _font(bold=True, size=11, color=C_WHITE)
+        ws["A1"].fill = _fill(C_HEADER_BG)
+        ws["A1"].alignment = _align("center")
+
+        for col, lbl in [("A","Note No."),("B","Description"),("C","Amount (Rs.)")]:
+            ws[f"{col}2"].value = lbl
+            ws[f"{col}2"].font = _font(bold=True, size=9, color=C_WHITE)
+            ws[f"{col}2"].fill = _fill(C_MID_BLUE)
+            ws[f"{col}2"].alignment = _align("center")
+
+        fd = self.fd
+        NOTE_INDEX = [
+            (1,  "Share Capital",                  fd.share_capital()),
+            (2,  "Reserves & Surplus",             fd.reserves_surplus()),
+            (3,  "Long-Term Borrowings",           fd.long_term_borrowings()),
+            (4,  "Short-Term Borrowings",          fd.short_term_borrowings() + fd.bank_od_in_bank_accounts()),
+            (5,  "Trade Payables",                 fd.trade_payables()),
+            (8,  "Fixed Assets (Net Block)",       fd.net_fixed_assets()),
+            (11, "Inventories",                    fd.closing_stock()),
+            (12, "Trade Receivables",              fd.trade_receivables()),
+            (13, "Cash & Cash Equivalents",        fd.cash_and_bank()),
+        ]
+        for i, (num, title, amount) in enumerate(NOTE_INDEX, start=3):
+            sheet_name = self._note_sheet_name(num)
+            ws[f"A{i}"].value = f"Note {num}"
+            ws[f"A{i}"].hyperlink = f"#'{sheet_name}'!A1"
+            ws[f"A{i}"].font = Font(name="Calibri", size=9, color="1D4ED8", underline="single")
+            ws[f"A{i}"].alignment = _align("center")
+            ws[f"B{i}"].value = title
+            ws[f"B{i}"].font = _font(size=9)
+            ws[f"C{i}"].value = amount
+            ws[f"C{i}"].number_format = INR
+            ws[f"C{i}"].font = _font(size=9)
+            ws[f"C{i}"].alignment = _align("right")
+            if i % 2 == 0:
+                for col in "ABC":
+                    ws[f"{col}{i}"].fill = _fill(C_LIGHT_BLUE)
+
+        ws.freeze_panes = "A3"
 
     # ── P&L Statement ─────────────────────────────────────────────────────────
 
@@ -1783,6 +1994,8 @@ class App:
         self.cl_stock    = tk.StringVar()
         self.status_var  = tk.StringVar(value="Select a Tally SQLite file to begin.")
         self.fd: FinancialData | None = None
+        self.reclassify_map: dict[str, str] = {}
+        self._mapping_vars: dict[str, tk.StringVar] = {}  # primary_group → StringVar for dropdown
 
         # Projection inputs
         self.proj_vars: dict[str, tk.StringVar] = {
@@ -1856,6 +2069,7 @@ class App:
         self._build_actual_tab()
         self._build_proj_tab()
         self._build_validation_tab()
+        self._build_mapping_tab()
 
         # ── Status + action ───────────────────────────────────────────────────
         bottom = ttk.Frame(main)
@@ -2028,6 +2242,113 @@ class App:
 
         self.val_tree = tree
 
+    def _build_mapping_tab(self) -> None:
+        tab = ttk.Frame(self.nb, padding=8)
+        self.nb.add(tab, text="Group Mapping")
+        tab.rowconfigure(1, weight=1)
+        tab.columnconfigure(0, weight=1)
+
+        info = ttk.Label(tab,
+            text="Assign unrecognised primary groups to standard Schedule III heads.\n"
+                 "Groups already in the built-in map are shown but cannot be changed here.",
+            font=("Calibri", 9), foreground="#595959")
+        info.grid(row=0, column=0, sticky="ew", pady=(0,6))
+
+        # Scrollable container for rows
+        container = ttk.Frame(tab)
+        container.grid(row=1, column=0, sticky="nsew")
+        container.rowconfigure(0, weight=1)
+        container.columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(container, bg="#F0F4F8", highlightthickness=0)
+        vsb = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+
+        self._mapping_inner = ttk.Frame(canvas, padding=4)
+        self._mapping_canvas_id = canvas.create_window((0, 0), window=self._mapping_inner, anchor="nw")
+
+        def _on_inner_resize(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfig(self._mapping_canvas_id, width=canvas.winfo_width())
+        self._mapping_inner.bind("<Configure>", _on_inner_resize)
+        canvas.bind("<Configure>", _on_inner_resize)
+        self._mapping_canvas = canvas
+
+        btn_row = ttk.Frame(tab)
+        btn_row.grid(row=2, column=0, sticky="ew", pady=(6,0))
+        ttk.Button(btn_row, text="Apply Mapping & Reload Preview",
+                   command=self._apply_mapping).pack(side="right")
+        self._mapping_vars = {}
+        self._mapping_inner_rows = []   # list of (frame) for clearing
+
+    def _populate_mapping_tab(self, fd: "FinancialData") -> None:
+        """Fill the mapping tab from the loaded FinancialData."""
+        from collections import defaultdict
+        pg_balance: dict[str, float] = defaultdict(float)
+        pg_parents: dict[str, set[str]] = defaultdict(set)
+        for l in fd.ledgers:
+            pg_balance[l.primary_group] += l.closing
+            pg_parents[l.primary_group].add(l.parent)
+
+        # Clear old rows
+        for child in self._mapping_inner.winfo_children():
+            child.destroy()
+        self._mapping_vars.clear()
+
+        ALL_STANDARD = sorted(set(BS_MAP.keys()) | set(PNL_MAP.keys()))
+        DROPDOWN_VALUES = ["(Use Auto-Infer)"] + ALL_STANDARD
+
+        # Column headers
+        for c, lbl in enumerate(["Primary Group", "Net Balance (Rs.)", "Auto-Inferred Head", "Your Override"]):
+            ttk.Label(self._mapping_inner, text=lbl, font=("Calibri", 9, "bold"),
+                      background="#BDD7EE").grid(row=0, column=c, sticky="ew", padx=2, pady=2)
+        self._mapping_inner.columnconfigure(0, weight=1)
+        self._mapping_inner.columnconfigure(2, weight=1)
+        self._mapping_inner.columnconfigure(3, weight=1)
+
+        sorted_pgs = sorted(pg_balance.items(), key=lambda x: abs(x[1]), reverse=True)
+        for row_i, (pg, bal) in enumerate(sorted_pgs, start=1):
+            in_map = pg in BS_MAP or pg in PNL_MAP
+            auto = pg if in_map else (infer_standard_group(pg, pg_parents[pg]) or "(no match)")
+            current_override = self.reclassify_map.get(pg, "(Use Auto-Infer)")
+
+            bg = "#F0F4F8" if row_i % 2 == 0 else "#FFFFFF"
+            ttk.Label(self._mapping_inner, text=pg,
+                      font=("Calibri", 9, "bold" if not in_map else "normal"),
+                      background=bg, foreground="#CC0000" if not in_map else "#333333"
+                      ).grid(row=row_i, column=0, sticky="ew", padx=2, pady=1)
+            ttk.Label(self._mapping_inner, text=f"{bal:,.0f}",
+                      font=("Calibri", 9), background=bg
+                      ).grid(row=row_i, column=1, sticky="e", padx=2, pady=1)
+            ttk.Label(self._mapping_inner, text=auto,
+                      font=("Calibri", 9, "italic"), foreground="#595959", background=bg
+                      ).grid(row=row_i, column=2, sticky="ew", padx=2, pady=1)
+
+            if in_map:
+                ttk.Label(self._mapping_inner, text="(built-in)",
+                          font=("Calibri", 9), foreground="#888", background=bg
+                          ).grid(row=row_i, column=3, sticky="ew", padx=2, pady=1)
+            else:
+                var = tk.StringVar(value=current_override)
+                self._mapping_vars[pg] = var
+                cb = ttk.Combobox(self._mapping_inner, textvariable=var,
+                                  values=DROPDOWN_VALUES, state="readonly", width=28)
+                cb.grid(row=row_i, column=3, sticky="ew", padx=2, pady=1)
+
+    def _apply_mapping(self) -> None:
+        """Save combobox selections to reclassify_map and reload preview."""
+        new_map = {}
+        for pg, var in self._mapping_vars.items():
+            val = var.get()
+            if val and val != "(Use Auto-Infer)":
+                new_map[pg] = val
+        self.reclassify_map = new_map
+        if self.db_path.get():
+            self._preview_actual()
+            self._run_validation()
+
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _set_status(self, msg: str) -> None:
@@ -2062,6 +2383,7 @@ class App:
             )
             self._preview_actual()
             self._run_validation()
+            self._populate_mapping_tab(self.fd)
         except Exception as e:
             messagebox.showerror("Load Error", str(e))
 
@@ -2100,6 +2422,7 @@ class App:
                 path,
                 opening_stock_override=self._parse_stock(self.op_stock.get()),
                 closing_stock_override=self._parse_stock(self.cl_stock.get()),
+                reclassify_map=self.reclassify_map,
             )
             self.fd = fd
             return fd
