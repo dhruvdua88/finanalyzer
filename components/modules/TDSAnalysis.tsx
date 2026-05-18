@@ -16,6 +16,8 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { setBadge } from '../../services/badgeStore';
+import { AnalysisType } from '../../types';
 import {
   AlertTriangle,
   AlertOctagon,
@@ -366,6 +368,11 @@ const TDSAnalysis: React.FC<TDSAnalysisProps> = ({
         return;
       }
       setGroups(e.data.groups);
+      // Publish anomaly badge count (missed + short-deducted)
+      const missed = (e.data.groups as any[]).filter(
+        (g) => g.status === 'missed' || g.status === 'short_deducted'
+      ).length;
+      setBadge(AnalysisType.TDS_ANALYSIS, missed);
     };
     return () => { workerRef.current?.terminate(); };
   }, []);

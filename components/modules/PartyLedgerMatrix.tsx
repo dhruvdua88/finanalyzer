@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { LedgerEntry, PartyMatrixProfile } from '../../types';
+import { LedgerEntry, PartyMatrixProfile, AnalysisType } from '../../types';
+import { setBadge } from '../../services/badgeStore';
 import {
   Download,
   Upload,
@@ -779,6 +780,15 @@ const PartyLedgerMatrix: React.FC<Props> = ({ data, externalProfile, onProfileUp
   }, [analysis, filteredRows.length, tdsTagged, gstTagged]);
 
   const needsSelection = tdsLedgers.length === 0 || gstLedgers.length === 0 || rcmLedgers.length === 0;
+
+  // Publish total anomaly count as badge
+  useEffect(() => {
+    const total =
+      (kpis.zeroTds ?? 0) +
+      (kpis.zeroGst ?? 0) +
+      kpis.balanceGaps;
+    setBadge(AnalysisType.PARTY_LEDGER_MATRIX, total);
+  }, [kpis.zeroTds, kpis.zeroGst, kpis.balanceGaps]);
 
   // ── Sort helper ────────────────────────────────────────────────────────────
   const setSort = (k: SortKey) => {

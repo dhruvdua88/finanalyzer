@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Download, Info, Search } from 'lucide-react';
-import { LedgerEntry } from '../../types';
+import { LedgerEntry, AnalysisType } from '../../types';
 import { isSqlBackendAvailable } from '../../services/sqlDataService';
+import { setBadge } from '../../services/badgeStore';
 import { fetchSqlModuleRows } from '../../services/sqlAnalyticsService';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1076,6 +1077,12 @@ const GSTR2BReconciliation: React.FC<GSTR2BReconciliationProps> = ({
     recoRows.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
     return counts;
   }, [recoRows]);
+
+  // Publish unmatched count as anomaly badge
+  useEffect(() => {
+    const unmatched = (statusCounts['Not in Books'] ?? 0) + (statusCounts['Amount Mismatch'] ?? 0);
+    setBadge(AnalysisType.GSTR2B_RECONCILIATION, unmatched);
+  }, [statusCounts]);
 
   const visibleRows = useMemo(() => {
     const q = search.trim().toLowerCase();
