@@ -205,6 +205,13 @@ export interface GSTRateResult {
   saleAmount: number;
   taxAmount: number;
   calculatedRate: number;
+  // ── Enrichment from mst_stock_item via TallyStore shim ────────────────────
+  // Master-declared GST rate for the first stock item on the voucher.
+  // Populated only when the ZIP import was used (legacy live-loader leaves
+  // it undefined). When present, statusDetail will note the agreement or
+  // mismatch between derived and master rates.
+  masterRate?: number;
+  hsn?: string;
   taxLedgers: string[];
   salesLedgers: string[];
   status: 'Match' | 'Rate Issues' | 'GST Not Charged';

@@ -13,24 +13,21 @@ import React, { useMemo, useState } from 'react';
 import { Download, AlertCircle, AlertTriangle, FileWarning, ShieldAlert, Search } from 'lucide-react';
 import { LedgerEntry } from '../../types';
 import {
-  TallyStore,
   getPurchaseITCRegister,
   deriveItcIssues,
   dateRangeOf,
+  useTallyStore,
   type ItcRow,
   type ItcType,
 } from '../../services/tally';
 
 interface PurchaseGSTRegisterProps {
   // Already month-filtered by FileUpload; used only to derive the date
-  // range that scopes the ITC query.
+  // range that scopes the ITC query. The relational TallyStore is read
+  // from context (TallyStoreProvider in App.tsx) — modules that need it
+  // call useTallyStore() rather than receiving it as a prop, so future
+  // module migrations don't all force a prop-signature change.
   data: LedgerEntry[];
-  // The relational store carrying full masters. ZIP imports populate this.
-  // Legacy (live-loader) imports leave it null, which gracefully shows a
-  // "ZIP import required" notice — the ITC logic depends on mst_group
-  // parent chains and mst_ledger.gst_duty_head, neither of which the
-  // legacy loader exposes.
-  store: TallyStore | null;
 }
 
 const TYPE_BADGE_CLASS: Record<ItcType, string> = {
@@ -79,7 +76,8 @@ const toExcelRow = (r: ItcRow) => ({
   'GUID': r.guid,
 });
 
-const PurchaseGSTRegister: React.FC<PurchaseGSTRegisterProps> = ({ data, store }) => {
+const PurchaseGSTRegister: React.FC<PurchaseGSTRegisterProps> = ({ data }) => {
+  const store = useTallyStore();
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<ItcType | 'ALL'>('ALL');
   const [activeIssue, setActiveIssue] = useState<null | 'rcm' | 'cgstSgst' | 'gstin' | 'noInv'>(null);

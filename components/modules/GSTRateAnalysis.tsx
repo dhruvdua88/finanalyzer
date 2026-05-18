@@ -106,31 +106,56 @@ const GSTRateAnalysis: React.FC<GSTRateAnalysisProps> = ({ data, externalSelecte
         let status: GSTRateResult['status'] = 'Rate Issues';
         let statusDetail = '';
 
+        // Master-declared rate from mst_stock_item (via the TallyStore shim).
+        // Each accounting line carries the GST rate of the voucher's first
+        // inventory item; we read the highest non-zero rate seen.
+        const masterRate = Math.max(0, ...group.entries.map((e) => Number(e.gst_rate) || 0));
+        const hsn = group.entries.find((e) => e.gst_hsn_code)?.gst_hsn_code || '';
+
         if (totalTax === 0) {
           status = 'GST Not Charged';
           statusDetail = 'No Tax Found';
         } else {
           calculatedRate = (totalTax / totalSale) * 100;
-          
+
           let matched = false;
-          for (const stdRate of STANDARD_RATES) {
-            const tolerance = stdRate * 0.05; 
-            if (Math.abs(calculatedRate - stdRate) <= tolerance) {
+
+          // When master rate is on file, treat that as the reference. Falls
+          // back to the standard-rate matcher otherwise — preserves the
+          // legacy behaviour when the user imported via the live loader.
+          if (masterRate > 0) {
+            const tolerance = Math.max(0.5, masterRate * 0.02);
+            if (Math.abs(calculatedRate - masterRate) <= tolerance) {
               status = 'Match';
-              statusDetail = `Match ${stdRate}%`;
+              statusDetail = `Match ${masterRate}% (master)`;
               matched = true;
-              break;
+            } else {
+              status = 'Rate Issues';
+              statusDetail = `Master ${masterRate}% vs Derived ${calculatedRate.toFixed(2)}%`;
+              matched = true;
             }
           }
-          
+
+          if (!matched) {
+            for (const stdRate of STANDARD_RATES) {
+              const tolerance = stdRate * 0.05;
+              if (Math.abs(calculatedRate - stdRate) <= tolerance) {
+                status = 'Match';
+                statusDetail = `Match ${stdRate}%`;
+                matched = true;
+                break;
+              }
+            }
+          }
+
           if (!matched) {
             status = 'Rate Issues';
             statusDetail = `${calculatedRate.toFixed(2)}% (Non-Std)`;
           }
         }
 
-        const partyEntry = group.entries.find(e => 
-          (e.TallyPrimary || '').toLowerCase().includes('debtor') || 
+        const partyEntry = group.entries.find(e =>
+          (e.TallyPrimary || '').toLowerCase().includes('debtor') ||
           (e.TallyPrimary || '').toLowerCase().includes('creditor')
         );
         const partyName = partyEntry ? partyEntry.Ledger : 'Unknown Party';
@@ -142,6 +167,8 @@ const GSTRateAnalysis: React.FC<GSTRateAnalysisProps> = ({ data, externalSelecte
           saleAmount: totalSale,
           taxAmount: totalTax,
           calculatedRate: parseFloat(calculatedRate.toFixed(2)),
+          masterRate: masterRate > 0 ? masterRate : undefined,
+          hsn: hsn || undefined,
           taxLedgers: [...new Set(taxLedgersInVoucher)],
           salesLedgers: [...new Set(salesLedgersInVoucher)],
           status,

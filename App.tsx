@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useState, useEffect, useMemo } from 'react';
 import FileUpload from './components/FileUpload';
 import { LedgerEntry, AnalysisType, AuditSettings } from './types';
 import { clearSqlData, fetchRowsFromSql, isSqlBackendAvailable, loadRowsIntoSql, SqlLoadSummary } from './services/sqlDataService';
-import { TallyStore } from './services/tally';
+import { TallyStore, TallyStoreProvider } from './services/tally';
 import { LayoutDashboard, Receipt, FileSpreadsheet, ArrowLeft, BarChart3, FileInput, Ban, TrendingUp, BookOpen, ShieldCheck, Settings2, PieChart, FileText, Landmark, Clock3, Users2, Menu, X, Wallet, FileSearch, AlertTriangle, ShieldAlert, Moon, Sun } from 'lucide-react';
 
 const GSTRateAnalysis = lazy(() => import('./components/modules/GSTRateAnalysis'));
@@ -639,6 +639,7 @@ const App: React.FC = () => {
               Loading module dataset...
             </div>
           ) : (
+            <TallyStoreProvider store={store}>
             <Suspense
               fallback={
                 <div className="bg-white border border-slate-200 rounded-xl p-10 text-center text-slate-500">
@@ -664,7 +665,7 @@ const App: React.FC = () => {
                 <SalesRegister data={transactionData} externalSelectedLedgers={settings.salesGstLedgers} />
               )}
               {activeModule === AnalysisType.PURCHASE_GST_REGISTER && (
-                <PurchaseGSTRegister data={transactionData} store={store} />
+                <PurchaseGSTRegister data={transactionData} />
               )}
               {activeModule === AnalysisType.GSTR2B_RECONCILIATION && (
                 <GSTR2BReconciliation
@@ -744,6 +745,7 @@ const App: React.FC = () => {
                 />
               )}
             </Suspense>
+            </TallyStoreProvider>
           )}
         </main>
       </div>

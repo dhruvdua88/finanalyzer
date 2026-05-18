@@ -20,6 +20,15 @@ type RegRow = {
   cess: number;
   total: number;
   narration: string;
+  // ── Enrichments from the relational store (via LedgerEntry shim) ──────
+  // Sourced from mst_stock_item.gst_hsn_code / gst_rate and trn_voucher
+  // .place_of_supply / .reference_date. Multi-HSN invoices show only the
+  // first inventory item's HSN here; the deeper per-line breakdown is
+  // available in the GST Rate Analysis module.
+  hsn: string;
+  gstRate: number;
+  placeOfSupply: string;
+  referenceDate: string;
 };
 
 type MonthlySummaryRow = {
@@ -260,6 +269,13 @@ const SalesRegister: React.FC<{ data: LedgerEntry[]; externalSelectedLedgers?: s
             .find((x: string) => x.trim()) || '';
         const date = toDDMMYYYY(voucher.date);
 
+        // Enrichments from LedgerEntry shim — find the first entry that has
+        // each populated, since not every accounting line carries them.
+        const hsn = entries.find((e: LedgerEntry) => e.gst_hsn_code)?.gst_hsn_code || '';
+        const gstRate = entries.find((e: LedgerEntry) => (e.gst_rate || 0) > 0)?.gst_rate || 0;
+        const placeOfSupply = entries.find((e: LedgerEntry) => e.place_of_supply)?.place_of_supply || '';
+        const referenceDate = entries.find((e: LedgerEntry) => e.reference_date)?.reference_date || '';
+
         return {
           monthKey: monthKeyFromDate(date),
           date,
@@ -277,6 +293,10 @@ const SalesRegister: React.FC<{ data: LedgerEntry[]; externalSelectedLedgers?: s
           cgst,
           sgst,
           cess,
+          hsn,
+          gstRate,
+          placeOfSupply,
+          referenceDate,
           total: taxable + igst + cgst + sgst + cess,
           narration: entries.find((e: LedgerEntry) => e.narration)?.narration || '',
         } as RegRow;
@@ -375,12 +395,16 @@ const SalesRegister: React.FC<{ data: LedgerEntry[]; externalSelectedLedgers?: s
       const XLSX = await import('xlsx');
       const exportRows = visibleRows.map((r) => ({
         'Invoice Date': r.date,
+        'Reference Date': r.referenceDate ? toDDMMYYYY(r.referenceDate) : '',
         'Invoice/JV No': r.invoice,
         'Invoice Number Issue': r.issue,
         'JV No': r.jv,
         'Voucher Type': r.voucherType,
         'Party Name': r.party,
         GSTIN: r.gstin,
+        'Place of Supply': r.placeOfSupply,
+        'HSN/SAC': r.hsn,
+        'GST Rate %': r.gstRate || '',
         'Taxable Value': r.taxable,
         IGST: r.igst,
         CGST: r.cgst,
@@ -572,6 +596,9 @@ const SalesRegister: React.FC<{ data: LedgerEntry[]; externalSelectedLedgers?: s
               <th className="p-2 text-left">Invoice Issue</th>
               <th className="p-2 text-left">Party</th>
               <th className="p-2 text-left">GSTIN</th>
+              <th className="p-2 text-left">PoS</th>
+              <th className="p-2 text-left">HSN</th>
+              <th className="p-2 text-right">Rate %</th>
               <th className="p-2 text-right">Taxable</th>
               <th className="p-2 text-right">IGST</th>
               <th className="p-2 text-right">CGST</th>
@@ -586,7 +613,10 @@ const SalesRegister: React.FC<{ data: LedgerEntry[]; externalSelectedLedgers?: s
                 <td className={`p-2 font-medium ${r.issue ? 'text-red-600' : ''}`}>{r.invoice}</td>
                 <td className={`p-2 text-xs ${r.issue ? 'text-red-600' : 'text-slate-400'}`}>{r.issue || '-'}</td>
                 <td className="p-2">{r.party}</td>
-                <td className="p-2 font-mono">{r.gstin || '-'}</td>
+                <td className="p-2 font-mono text-xs">{r.gstin || '-'}</td>
+                <td className="p-2 text-xs">{r.placeOfSupply || '-'}</td>
+                <td className="p-2 font-mono text-xs">{r.hsn || '-'}</td>
+                <td className="p-2 text-right text-xs">{r.gstRate ? `${r.gstRate}%` : '-'}</td>
                 <td className="p-2 text-right">{r.taxable.toLocaleString('en-IN')}</td>
                 <td className="p-2 text-right">{r.igst.toLocaleString('en-IN')}</td>
                 <td className="p-2 text-right">{r.cgst.toLocaleString('en-IN')}</td>
@@ -596,7 +626,7 @@ const SalesRegister: React.FC<{ data: LedgerEntry[]; externalSelectedLedgers?: s
             ))}
             {visibleRows.length === 0 && (
               <tr>
-                <td className="p-8 text-center text-slate-400" colSpan={10}>
+                <td className="p-8 text-center text-slate-400" colSpan={13}>
                   No sales register rows for current filters.
                 </td>
               </tr>
