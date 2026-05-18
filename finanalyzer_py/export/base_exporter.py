@@ -16,10 +16,13 @@ from export.styles import (
 
 
 class BaseExporter:
-    def __init__(self) -> None:
-        self.wb = Workbook()
-        # Remove the default blank sheet
-        self.wb.remove(self.wb.active)
+    def __init__(self, wb: Workbook | None = None) -> None:
+        if wb is not None:
+            self.wb = wb
+        else:
+            self.wb = Workbook()
+            # Remove the default blank sheet
+            self.wb.remove(self.wb.active)
 
     def add_sheet(self, title: str) -> Worksheet:
         return self.wb.create_sheet(title=title)

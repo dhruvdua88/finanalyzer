@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -28,6 +29,8 @@ class DashboardPanel(ctk.CTkFrame):
         self._build()
 
     def _build(self) -> None:
+        self._queue: queue.Queue = queue.Queue()
+
         # Title
         ctk.CTkLabel(
             self, text="FinAnalyzer",
@@ -56,6 +59,17 @@ class DashboardPanel(ctk.CTkFrame):
             command=self._import_gstr2b,
         ).pack(side="left", padx=12)
 
+        # Full report export button
+        self._export_btn = ctk.CTkButton(
+            btn_row, text="📊  Export Full Report",
+            width=200, height=40,
+            font=ctk.CTkFont(size=14),
+            fg_color="#0F766E", hover_color="#0D6B63",
+            state="disabled",
+            command=self._export_full_report,
+        )
+        self._export_btn.pack(side="left", padx=12)
+
         # KPI cards
         kpi_frame = ctk.CTkFrame(self, fg_color="transparent")
         kpi_frame.pack(pady=20, fill="x", padx=40)
@@ -82,6 +96,26 @@ class DashboardPanel(ctk.CTkFrame):
         self._status_var = tk.StringVar(value="No data loaded. Import a TSF file to begin.")
         ctk.CTkLabel(self, textvariable=self._status_var, font=ctk.CTkFont(size=11),
                      text_color="gray").pack(pady=8)
+
+        self.after(100, self._poll_queue)
+
+    def _poll_queue(self) -> None:
+        while True:
+            try:
+                kind, payload = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "status":
+                self._status_var.set(payload)
+            elif kind == "export_done":
+                self._export_btn.configure(state="normal")
+                self._status_var.set(f"Saved: {payload}")
+                messagebox.showinfo("Export Complete", f"Full report saved to:\n{payload}")
+            elif kind == "export_error":
+                self._export_btn.configure(state="normal")
+                self._status_var.set(f"Export failed: {payload}")
+                messagebox.showerror("Export Error", payload)
+        self.after(100, self._poll_queue)
 
     def on_activate(self) -> None:
         self._refresh_kpis()
@@ -129,6 +163,7 @@ class DashboardPanel(ctk.CTkFrame):
         self._refresh_kpis()
         n = self.app_state.total_rows
         self._status_var.set(f"Loaded {n:,} entries from TSF file.")
+        self._export_btn.configure(state="normal")
         self.on_state_change()
 
     def _import_gstr2b(self) -> None:
@@ -147,3 +182,33 @@ class DashboardPanel(ctk.CTkFrame):
             messagebox.showinfo("GSTR-2B Imported", f"Loaded {n:,} B2B invoice records.")
         except Exception as exc:
             messagebox.showerror("GSTR-2B Import Error", str(exc))
+
+    def _export_full_report(self) -> None:
+        if not self.app_state.entries:
+            messagebox.showwarning("No Data", "Import a TSF file before exporting.")
+            return
+
+        from export.consolidated_exporter import suggested_filename
+        company = self.app_state.settings.company_name or "Company"
+        default_name = suggested_filename(company)
+
+        out_dir = filedialog.askdirectory(title="Choose output folder for full report")
+        if not out_dir:
+            return
+
+        self._export_btn.configure(state="disabled")
+        self._status_var.set("Preparing full report…")
+        threading.Thread(target=self._run_full_export, args=(out_dir,), daemon=True).start()
+
+    def _run_full_export(self, out_dir: str) -> None:
+        try:
+            from export.consolidated_exporter import export_consolidated
+
+            def on_progress(msg: str) -> None:
+                self._queue.put(("status", msg))
+
+            path = export_consolidated(self.app_state, out_dir, on_progress=on_progress)
+            self._queue.put(("export_done", str(path)))
+        except Exception as exc:
+            import traceback
+            self._queue.put(("export_error", traceback.format_exc()[-500:]))

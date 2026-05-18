@@ -302,6 +302,10 @@ class RelatedPartyExporter(BaseExporter):
 
     def export(self, data: dict, company: str, period: str) -> None:
         meta = f"{company}  |  {period}"
+        self._build_parties_sheet(data["parties"], meta, self.wb)
+        self._build_txn_sheet(data["transactions"], meta, self.wb)
+
+    def _build_parties_sheet(self, parties: list[dict], meta: str, wb=None) -> None:
         ws1 = self.add_sheet("Related Parties")
         headers1 = ["Party Name", "Category", "Total Dr (₹)", "Total Cr (₹)", "Net (₹)"]
         n = len(headers1)
@@ -309,18 +313,19 @@ class RelatedPartyExporter(BaseExporter):
         self.write_meta_row(ws1, meta, n, row=2)
         self.write_header_row(ws1, headers1, row=4, freeze_row=4)
         amt_cols = {3: AMOUNT_FMT, 4: AMOUNT_FMT, 5: AMOUNT_FMT}
-        for i, r in enumerate(data["parties"]):
+        for i, r in enumerate(parties):
             self.write_data_row(ws1, i + 5, [r["name"], r["category"], r["total_dr"], r["total_cr"], r["net"]],
                                 i % 2 == 0, num_fmt_cols=amt_cols)
         self.set_col_widths(ws1, [34, 18, 16, 16, 16])
 
+    def _build_txn_sheet(self, transactions: list[dict], meta: str, wb=None) -> None:
         ws2 = self.add_sheet("Transaction Detail")
         headers2 = ["Date", "Voucher Type", "Voucher No", "Party", "Category", "Ledger", "Amount (₹)", "Narration"]
         n2 = len(headers2)
         self.write_title_row(ws2, "Related Party Transactions", n2, row=1)
         self.write_meta_row(ws2, meta, n2, row=2)
         self.write_header_row(ws2, headers2, row=4, freeze_row=4)
-        for i, r in enumerate(data["transactions"]):
+        for i, r in enumerate(transactions):
             self.write_data_row(ws2, i + 5, [r["date"], r["voucher_type"], r["voucher_number"],
                                              r["party"], r["category"], r["ledger"], r["amount"], r["narration"]],
                                 i % 2 == 0, num_fmt_cols={7: AMOUNT_FMT})
