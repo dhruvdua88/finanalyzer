@@ -1,8 +1,9 @@
 import React, { Suspense, lazy, useState, useEffect, useMemo } from 'react';
 import FileUpload from './components/FileUpload';
 import { LedgerEntry, AnalysisType, AuditSettings } from './types';
-import { clearSqlData, exportTallySourceFile, fetchRowsFromSql, isSqlBackendAvailable, loadRowsIntoSql, SqlLoadSummary } from './services/sqlDataService';
-import { LayoutDashboard, Receipt, FileSpreadsheet, ArrowLeft, BarChart3, FileInput, Ban, TrendingUp, BookOpen, ShieldCheck, Settings2, PieChart, FileText, Landmark, Clock3, Download, Users2, Menu, X, Wallet, FileSearch, AlertTriangle, ShieldAlert, GitCompare, Moon, Sun } from 'lucide-react';
+import { clearSqlData, fetchRowsFromSql, isSqlBackendAvailable, loadRowsIntoSql, SqlLoadSummary } from './services/sqlDataService';
+import { TallyStore } from './services/tally';
+import { LayoutDashboard, Receipt, FileSpreadsheet, ArrowLeft, BarChart3, FileInput, Ban, TrendingUp, BookOpen, ShieldCheck, Settings2, PieChart, FileText, Landmark, Clock3, Users2, Menu, X, Wallet, FileSearch, AlertTriangle, ShieldAlert, Moon, Sun } from 'lucide-react';
 
 const GSTRateAnalysis = lazy(() => import('./components/modules/GSTRateAnalysis'));
 const SalesRegister = lazy(() => import('./components/modules/SalesRegister'));
@@ -26,7 +27,6 @@ const CashFlowAnalysis = lazy(() => import('./components/modules/CashFlowAnalysi
 const ProfitLossAnalysis = lazy(() => import('./components/modules/ProfitLossAnalysis'));
 const ExceptionDensityHeatmapAnalytics = lazy(() => import('./components/modules/ExceptionDensityHeatmapAnalytics'));
 const BalanceSheetCleanlinessAnalytics = lazy(() => import('./components/modules/BalanceSheetCleanlinessAnalytics'));
-const TSFComparison = lazy(() => import('./components/modules/TSFComparison'));
 const ITC3BReconciliation = lazy(() => import('./components/modules/ITC3BReconciliation'));
 const OrphanPLVouchers = lazy(() => import('./components/modules/OrphanPLVouchers'));
 
@@ -50,7 +50,6 @@ const MODULE_LABELS: Record<AnalysisType, string> = {
   [AnalysisType.VARIANCE_ANALYSIS]: 'Month-on-Month Variance Analysis',
   [AnalysisType.EXCEPTION_DENSITY_HEATMAP]: 'Exception Density Heatmap Analytics',
   [AnalysisType.BALANCE_SHEET_CLEANLINESS]: 'Balance Sheet Cleanliness Analytics',
-  [AnalysisType.TSF_COMPARISON]: 'TSF Comparison',
   [AnalysisType.LEDGER_ANALYTICS]: 'Accounting Ledger Analytics',
   [AnalysisType.PARTY_LEDGER_MATRIX]: 'Party Ledger Transaction Matrix',
   [AnalysisType.RELATED_PARTY_ANALYSIS]: 'Related Party (RPT) Analysis',
@@ -81,7 +80,6 @@ const MODULE_ICONS: Record<AnalysisType, ModuleIcon> = {
   [AnalysisType.VARIANCE_ANALYSIS]: TrendingUp,
   [AnalysisType.EXCEPTION_DENSITY_HEATMAP]: ShieldAlert,
   [AnalysisType.BALANCE_SHEET_CLEANLINESS]: AlertTriangle,
-  [AnalysisType.TSF_COMPARISON]: GitCompare,
   [AnalysisType.LEDGER_ANALYTICS]: BookOpen,
   [AnalysisType.PARTY_LEDGER_MATRIX]: Users2,
   [AnalysisType.RELATED_PARTY_ANALYSIS]: ShieldCheck,
@@ -96,12 +94,6 @@ const MODULE_SECTIONS: Array<{ id: string; title: string; description: string; m
     title: 'Setup',
     description: 'Start here before running detailed checks.',
     modules: [AnalysisType.DASHBOARD, AnalysisType.AUDIT_CONFIG],
-  },
-  {
-    id: 'tsf-compare',
-    title: 'TSF Compare',
-    description: 'Compare current loaded TSF with a new TSF by strict GUID.',
-    modules: [AnalysisType.TSF_COMPARISON],
   },
   {
     id: 'core-audit',
@@ -167,6 +159,7 @@ const QUERY_DRIVEN_SQL_MODULES = new Set<AnalysisType>([
 
 const App: React.FC = () => {
   const [data, setData] = useState<LedgerEntry[]>([]);
+  const [store, setStore] = useState<TallyStore | null>(null);
   const [activeModule, setActiveModule] = useState<AnalysisType>(AnalysisType.DASHBOARD);
   const [hasDataset, setHasDataset] = useState(false);
   const [isSqlMode, setIsSqlMode] = useState(false);
@@ -334,8 +327,9 @@ const App: React.FC = () => {
     };
   };
 
-  const handleDataLoaded = async (parsedData: LedgerEntry[]) => {
+  const handleDataLoaded = async (parsedData: LedgerEntry[], parsedStore: TallyStore | null) => {
     const accountingRows = parsedData.filter(isAccountingVoucherEntry);
+    setStore(parsedStore);
     setActiveModule(AnalysisType.DASHBOARD);
     setSqlNote('');
     setIsModuleDataLoading(true);
@@ -428,6 +422,7 @@ const App: React.FC = () => {
   const resetDataset = () => {
     setActiveModule(AnalysisType.DASHBOARD);
     setData([]);
+    setStore(null);
     setHasDataset(false);
     setIsSqlMode(false);
     setSqlNote('');
@@ -439,39 +434,6 @@ const App: React.FC = () => {
       maxDate: '',
     });
     clearSqlData();
-  };
-
-  const downloadBlob = (blob: Blob, fileName: string) => {
-    const url = window.URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = fileName;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    window.URL.revokeObjectURL(url);
-  };
-
-  const handleExportSourceFile = async () => {
-    try {
-      setSqlNote('');
-      if (!isSqlMode) {
-        const sqlAvailable = await isSqlBackendAvailable();
-        if (!sqlAvailable) {
-          throw new Error('Source file export requires SQL backend in dev mode.');
-        }
-        const accountingRows = data.filter(isAccountingVoucherEntry);
-        const summary = await loadRowsIntoSql(accountingRows);
-        setIsSqlMode(true);
-        setDashboardSummary(summary);
-      }
-
-      const blob = await exportTallySourceFile();
-      const stamp = new Date().toISOString().slice(0, 10);
-      downloadBlob(blob, `Tally_Source_File_${stamp}.tsf`);
-    } catch (error: any) {
-      setSqlNote(error?.message || 'Unable to export Tally source file.');
-    }
   };
 
   const activeSection = useMemo(
@@ -646,18 +608,6 @@ const App: React.FC = () => {
             >
               {darkMode ? <Sun size={16} /> : <Moon size={16} />}
             </button>
-            <button
-              onClick={handleExportSourceFile}
-              disabled={!hasDataset}
-              className={`inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-bold border w-full sm:w-auto ${
-                hasDataset
-                  ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700'
-                  : 'bg-slate-200 text-slate-500 border-slate-200 cursor-not-allowed'
-              }`}
-            >
-              <Download size={14} />
-              Export Tally Source File
-            </button>
             <div className="text-left sm:text-right">
               <div className="text-sm text-slate-500">{dashboardSummary.totalRows} records loaded</div>
               <div className={`text-xs ${isSqlMode ? 'text-emerald-700' : 'text-amber-700'}`}>
@@ -774,7 +724,6 @@ const App: React.FC = () => {
               {activeModule === AnalysisType.ORPHAN_PL_VOUCHERS && (
                 <OrphanPLVouchers data={transactionData} />
               )}
-              {activeModule === AnalysisType.TSF_COMPARISON && <TSFComparison />}
               {activeModule === AnalysisType.LEDGER_ANALYTICS && <LedgerAnalytics data={transactionData} />}
               {activeModule === AnalysisType.VOUCHER_BOOK_VIEW && <VoucherBookView data={transactionData} />}
               {activeModule === AnalysisType.LEDGER_VOUCHER_VIEW && <LedgerVoucherView data={transactionData} />}

@@ -16,8 +16,24 @@ export interface LedgerEntry {
   closing_balance?: number;
   is_accounting_voucher?: number;
   is_master_ledger?: number;
-  // Index signature to allow for flexible CSV parsing
-  [key: string]: any; 
+
+  // ── Enrichments from the Tally XLSX export ────────────────────────────────
+  // All optional. Existing modules ignore them; new/migrated modules read
+  // them when present. Sourced from the relational TallyStore at shim time.
+  gst_hsn_code?: string;            // mst_stock_item.gst_hsn_code
+  gst_rate?: number;                // mst_stock_item.gst_rate
+  gst_taxability?: string;          // mst_stock_item.gst_taxability
+  pan?: string;                     // mst_ledger.it_pan
+  gst_registration_type?: string;   // mst_ledger.gst_registration_type
+  mailing_state?: string;           // mst_ledger.mailing_state
+  place_of_supply?: string;         // trn_voucher.place_of_supply
+  reference_date?: string;          // trn_voucher.reference_date (ISO)
+  bill_reference?: string;          // trn_bill.name (joined per ledger)
+  bill_credit_period?: number;      // mst_ledger.bill_credit_period
+  is_invoice?: number;              // trn_voucher.is_invoice (0/1)
+
+  // Retained for legacy flexibility — most modules read via typed members.
+  [key: string]: any;
 }
 
 // ── TDS Section Definitions (B2) ──────────────────────────────────────────────
@@ -228,7 +244,6 @@ export enum AnalysisType {
   VARIANCE_ANALYSIS = 'VARIANCE_ANALYSIS',
   EXCEPTION_DENSITY_HEATMAP = 'EXCEPTION_DENSITY_HEATMAP',
   BALANCE_SHEET_CLEANLINESS = 'BALANCE_SHEET_CLEANLINESS',
-  TSF_COMPARISON = 'TSF_COMPARISON',
   LEDGER_ANALYTICS = 'LEDGER_ANALYTICS',
   PARTY_LEDGER_MATRIX = 'PARTY_LEDGER_MATRIX',
   RELATED_PARTY_ANALYSIS = 'RELATED_PARTY_ANALYSIS',
