@@ -1,84 +1,125 @@
 @echo off
-:: FinAnalyzer – Windows launcher
-:: Double-click this file to start the app.
-:: Creates a virtual environment on first run and installs all dependencies.
+:: FinAnalyzer – React app launcher (Windows)
+:: Double-click in Explorer to start the Vite dev server and open the
+:: app in your default browser. Installs npm dependencies on first run.
 
 setlocal EnableDelayedExpansion
-title FinAnalyzer – Tally Audit Platform
+title FinAnalyzer - Tally Audit Platform
+
+cd /d "%~dp0"
+
+set "APP_HOST=127.0.0.1"
+set "APP_PORT=5173"
+set "APP_URL=http://%APP_HOST%:%APP_PORT%"
+set "APP_LOG=vite-dev.log"
+set "NPM_INSTALL_CMD=npm install --no-audit --no-fund"
+set "REPAIR_ATTEMPTED=0"
 
 echo =====================================
 echo   FinAnalyzer - Tally Audit Platform
 echo =====================================
 echo.
 
-:: ── Resolve paths ─────────────────────────────────────────────────────────────
-set "SCRIPT_DIR=%~dp0"
-:: Remove trailing backslash
-if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
-set "APP_DIR=%SCRIPT_DIR%\finanalyzer_py"
-set "VENV_DIR=%APP_DIR%\venv"
-
-:: ── 1. Python check ───────────────────────────────────────────────────────────
-set "PYTHON="
-for %%P in (python python3 py) do (
-    if "!PYTHON!"=="" (
-        where %%P >nul 2>&1 && set "PYTHON=%%P"
-    )
-)
-
-:: Try py launcher with version flags as fallback
-if "!PYTHON!"=="" (
-    py -3 --version >nul 2>&1 && set "PYTHON=py -3"
-)
-
-if "!PYTHON!"=="" (
-    echo ERROR: Python 3 was not found on your system.
-    echo Please install Python 3.9 or later from https://python.org
-    echo Make sure to check "Add Python to PATH" during installation.
-    echo.
-    pause
-    exit /b 1
-)
-
-for /f "tokens=*" %%V in ('!PYTHON! --version 2^>^&1') do echo Using %%V
-
-:: ── 2. Create virtual environment if missing ──────────────────────────────────
-if not exist "%VENV_DIR%\Scripts\activate.bat" (
-    echo Creating virtual environment at %VENV_DIR% ...
-    !PYTHON! -m venv "%VENV_DIR%"
-    if errorlevel 1 (
-        echo ERROR: Failed to create virtual environment.
-        pause
-        exit /b 1
-    )
-    echo Virtual environment created.
-)
-
-:: ── 3. Activate ───────────────────────────────────────────────────────────────
-call "%VENV_DIR%\Scripts\activate.bat"
-echo Virtual environment activated.
-
-:: ── 4. Install / upgrade dependencies ─────────────────────────────────────────
-echo Checking dependencies...
-python -m pip install --quiet --upgrade pip
-python -m pip install --quiet -r "%APP_DIR%\requirements.txt"
+:: ── 1. Node.js / npm check ────────────────────────────────────────────────────
+where node >nul 2>nul
 if errorlevel 1 (
-    echo ERROR: Failed to install dependencies.
-    pause
-    exit /b 1
+  echo Node.js is not installed or not available in PATH.
+  echo Install Node.js LTS from https://nodejs.org and retry.
+  pause
+  exit /b 1
 )
-echo Dependencies OK.
-echo.
 
-:: ── 5. Launch app ─────────────────────────────────────────────────────────────
-echo Starting FinAnalyzer...
-cd /d "%APP_DIR%"
-python main.py
-
-:: Keep window open if app crashes so user can read error
+where npm >nul 2>nul
 if errorlevel 1 (
-    echo.
-    echo FinAnalyzer exited with an error. See above for details.
-    pause
+  echo npm is not available in PATH. Reinstall Node.js LTS and retry.
+  pause
+  exit /b 1
 )
-endlocal
+
+:: ── 2. Free port if already in use (use existing helper if present) ───────────
+if exist "close_software.bat" call close_software.bat >nul 2>nul
+
+:: ── 3. Install dependencies if missing ────────────────────────────────────────
+call :ensure_dependencies
+if errorlevel 1 goto :fail
+
+:: ── 4. Launch Vite dev server in a separate window ────────────────────────────
+if exist "%APP_LOG%" del /f /q "%APP_LOG%" >nul 2>nul
+echo Starting FinAnalyzer web app...
+start "FinAnalyzer Dev Server" /min cmd /k "cd /d ""%~dp0"" & npm run dev -- --host %APP_HOST% --port %APP_PORT% --strictPort > ""%APP_LOG%"" 2>&1"
+
+:: ── 5. Wait for the port to start listening, then open the browser ────────────
+set /a RETRIES=60
+:wait_for_port
+netstat -ano | findstr ":%APP_PORT%" | findstr "LISTENING" >nul
+if not errorlevel 1 goto :ready
+set /a RETRIES-=1
+if !RETRIES! LEQ 0 goto :fail_startup
+ping -n 2 127.0.0.1 >nul
+goto :wait_for_port
+
+:ready
+start "" %APP_URL%
+echo FinAnalyzer started at %APP_URL%.
+exit /b 0
+
+:fail_startup
+echo FinAnalyzer did not become ready at %APP_URL%.
+if exist "%APP_LOG%" (
+  echo Check the startup log: %APP_LOG%
+  echo -------- LOG START --------
+  type "%APP_LOG%"
+  echo --------- LOG END ---------
+  echo.
+  echo You can also review the "FinAnalyzer Dev Server" command window.
+) else (
+  echo Check the "FinAnalyzer Dev Server" command window for errors.
+)
+pause
+exit /b 1
+
+:fail
+echo Failed to start FinAnalyzer.
+pause
+exit /b 1
+
+:ensure_dependencies
+set "NEED_INSTALL=0"
+if not exist "node_modules" set "NEED_INSTALL=1"
+if not exist "node_modules\.bin\vite.cmd" set "NEED_INSTALL=1"
+if not exist "node_modules\.bin\cross-env.cmd" set "NEED_INSTALL=1"
+
+if "%NEED_INSTALL%"=="0" (
+  echo Requirements check passed.
+  exit /b 0
+)
+
+echo Installing app requirements (first run)...
+call %NPM_INSTALL_CMD%
+if not errorlevel 1 goto :verify_dependencies
+
+if "%REPAIR_ATTEMPTED%"=="0" (
+  echo Requirements install failed. Attempting automatic repair...
+  set "REPAIR_ATTEMPTED=1"
+  if exist "node_modules" rmdir /s /q "node_modules" >nul 2>nul
+  call %NPM_INSTALL_CMD%
+  if errorlevel 1 (
+    echo Automatic repair failed while installing requirements.
+    exit /b 1
+  )
+) else (
+  echo Failed to install app requirements.
+  exit /b 1
+)
+
+:verify_dependencies
+if not exist "node_modules\.bin\vite.cmd" (
+  echo Requirements install is incomplete: missing vite runtime.
+  exit /b 1
+)
+if not exist "node_modules\.bin\cross-env.cmd" (
+  echo Requirements install is incomplete: missing cross-env runtime.
+  exit /b 1
+)
+echo Requirements are ready.
+exit /b 0
