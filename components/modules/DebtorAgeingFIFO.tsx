@@ -611,312 +611,255 @@ const DebtorAgeingFIFO: React.FC<DebtorAgeingFIFOProps> = ({ data }) => {
   const agedOver180 = (bucketGrandTotals['181-365'] || 0) + (bucketGrandTotals['>365'] || 0);
   const netReceivable = totals.totalReceivable - totals.totalAdvance;
   const isAsOfDateValid = ddMmYyyyToIso(asOfDateText) !== null;
-  const tableColumnCount = 16;
+
+  const BUCKET_STYLES = [
+    { th: 'bg-emerald-50 text-emerald-700 border-emerald-100', td: (v: number) => v > 0 ? 'text-emerald-700 font-medium' : 'text-slate-300', foot: 'bg-emerald-50 text-emerald-800 font-semibold' },
+    { th: 'bg-lime-50    text-lime-700    border-lime-100',    td: (v: number) => v > 0 ? 'text-lime-700 font-medium'    : 'text-slate-300', foot: 'bg-lime-50    text-lime-800    font-semibold' },
+    { th: 'bg-yellow-50  text-yellow-700  border-yellow-100',  td: (v: number) => v > 0 ? 'text-yellow-700 font-medium'  : 'text-slate-300', foot: 'bg-yellow-50  text-yellow-800  font-semibold' },
+    { th: 'bg-amber-50   text-amber-700   border-amber-100',   td: (v: number) => v > 0 ? 'text-amber-700 font-medium'   : 'text-slate-300', foot: 'bg-amber-50   text-amber-800   font-semibold' },
+    { th: 'bg-orange-50  text-orange-700  border-orange-100',  td: (v: number) => v > 0 ? 'text-orange-700 font-semibold': 'text-slate-300', foot: 'bg-orange-50  text-orange-800  font-bold'     },
+    { th: 'bg-red-50     text-red-700     border-red-100',     td: (v: number) => v > 0 ? 'text-red-700 font-bold'       : 'text-slate-300', foot: 'bg-red-50     text-red-800     font-bold'     },
+  ];
 
   return (
-    <div className="relative isolate space-y-6 pb-8" style={{ fontFamily: "'Avenir Next', 'Segoe UI', sans-serif" }}>
-      <div className="pointer-events-none absolute -top-20 -left-24 h-64 w-64 rounded-full bg-cyan-500/10 blur-3xl" />
-      <div className="pointer-events-none absolute -top-12 right-0 h-56 w-56 rounded-full bg-indigo-500/10 blur-3xl" />
+    <div className="space-y-5 pb-8">
 
-      <div className="rounded-3xl border border-slate-700 bg-slate-950 text-slate-100 p-6 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.95)]">
-        <p className="text-xs uppercase tracking-[0.35em] text-slate-400">Boardroom View</p>
-        <h2
-          className="mt-2 text-3xl md:text-4xl text-white"
-          style={{ fontFamily: "'Iowan Old Style', 'Palatino Linotype', serif", fontWeight: 700 }}
-        >
-          Debtor FIFO Command Center
-        </h2>
-        <p className="mt-2 text-sm text-slate-300">Ageing matrix designed for CFO-level receivable monitoring.</p>
+      {/* ── KPI strip ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+        {[
+          { label: 'As On Date',      value: asOfDateText,                 cls: 'text-slate-800' },
+          { label: 'Debtors',         value: String(totals.parties),        cls: 'text-slate-800' },
+          { label: 'FIFO Receivable', value: formatAmount(totals.totalReceivable), cls: 'text-blue-700' },
+          { label: 'Advance',         value: formatAmount(totals.totalAdvance),     cls: 'text-emerald-700' },
+          { label: 'Net Receivable',  value: formatAmount(netReceivable),           cls: 'text-slate-800' },
+          { label: 'Aged >180',       value: formatAmount(agedOver180),             cls: agedOver180 > 0 ? 'text-red-600' : 'text-slate-800' },
+          { label: 'Open Invoices',   value: String(totals.invoiceCount),   cls: 'text-slate-800' },
+        ].map(({ label, value, cls }) => (
+          <div key={label} className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3">
+            <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">{label}</p>
+            <p className={`mt-1 text-lg font-bold truncate ${cls}`}>{value}</p>
+          </div>
+        ))}
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-7 gap-4">
-        <div className="rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-sm">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">As On</p>
-          <p className="mt-1 text-2xl font-black text-slate-900">{asOfDateText}</p>
-        </div>
-        <div className="rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-sm">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Debtors</p>
-          <p className="mt-1 text-3xl font-black text-slate-900">{totals.parties}</p>
-        </div>
-        <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 shadow-sm">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-indigo-600">FIFO Receivable</p>
-          <p className="mt-1 text-2xl font-black text-indigo-800">{formatAmount(totals.totalReceivable)}</p>
-        </div>
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-600">Advance</p>
-          <p className="mt-1 text-2xl font-black text-emerald-800">{formatAmount(totals.totalAdvance)}</p>
-        </div>
-        <div className="rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-sm">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Net Receivable</p>
-          <p className="mt-1 text-2xl font-black text-slate-900">{formatAmount(netReceivable)}</p>
-        </div>
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 shadow-sm">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-rose-600">Aged &gt;180</p>
-          <p className="mt-1 text-2xl font-black text-rose-800">{formatAmount(agedOver180)}</p>
-        </div>
-        <div className="rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-sm">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Open Invoices</p>
-          <p className="mt-1 text-3xl font-black text-slate-900">{totals.invoiceCount}</p>
-        </div>
-      </div>
-
-      <div className="rounded-2xl border border-slate-800 bg-slate-900 text-slate-100 p-5 shadow-lg">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+      {/* ── Reconciliation check ── */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+        <div className="flex items-start justify-between gap-3 mb-3">
           <div>
-            <p className="text-sm font-black">Sundry Debtors Reconciliation Check</p>
-            <p className="text-xs text-slate-300 mt-1">
-              Source scope: ledgers under Sundry Debtors by TallyPrimary/TallyParent.
-            </p>
+            <p className="text-sm font-semibold text-slate-700">Sundry Debtors Reconciliation</p>
+            <p className="text-xs text-slate-400 mt-0.5">Ledger closing vs FIFO knock-off — tolerance ±{reconciliation.tolerance}</p>
           </div>
-          <div
-            className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold border ${
-              reconciliation.isPass
-                ? 'bg-emerald-900/40 text-emerald-200 border-emerald-700'
-                : 'bg-amber-900/40 text-amber-200 border-amber-700'
-            }`}
-          >
-            {reconciliation.isPass ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+          <span className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${
+            reconciliation.isPass
+              ? 'bg-emerald-100 text-emerald-700'
+              : 'bg-amber-100 text-amber-700'
+          }`}>
+            {reconciliation.isPass ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
             {reconciliation.isPass ? 'Reconciled' : 'Review Differences'}
-          </div>
+          </span>
         </div>
-        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-xs">
-          <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-3">
-            <p className="uppercase tracking-wider text-slate-400">Receivable (Dr)</p>
-            <p className="mt-1">FIFO {formatAmount(reconciliation.fifoReceivable)}</p>
-            <p>Ledger {formatAmount(reconciliation.ledgerClosingDr)}</p>
-            <p className="font-bold text-white mt-1">Diff {formatAmount(reconciliation.diffDr)}</p>
-          </div>
-          <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-3">
-            <p className="uppercase tracking-wider text-slate-400">Advance (Cr)</p>
-            <p className="mt-1">FIFO {formatAmount(reconciliation.fifoAdvance)}</p>
-            <p>Ledger {formatAmount(reconciliation.ledgerClosingCr)}</p>
-            <p className="font-bold text-white mt-1">Diff {formatAmount(reconciliation.diffCr)}</p>
-          </div>
-          <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-3">
-            <p className="uppercase tracking-wider text-slate-400">Combined</p>
-            <p className="mt-1">FIFO {formatAmount(reconciliation.combinedFifo)}</p>
-            <p>Ledger {formatAmount(reconciliation.combinedLedger)}</p>
-            <p className="font-bold text-white mt-1">Diff {formatAmount(reconciliation.diffCombined)}</p>
-          </div>
-          <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-3">
-            <p className="uppercase tracking-wider text-slate-400">Signed Net</p>
-            <p className="mt-1">FIFO {formatAmount(reconciliation.signedFifo)}</p>
-            <p>Ledger {formatAmount(reconciliation.ledgerClosingSigned)}</p>
-            <p className="font-bold text-white mt-1">Diff {formatAmount(reconciliation.diffSigned)}</p>
-          </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+          {[
+            { label: 'Receivable (Dr)', fifo: reconciliation.fifoReceivable, ledger: reconciliation.ledgerClosingDr, diff: reconciliation.diffDr },
+            { label: 'Advance (Cr)',    fifo: reconciliation.fifoAdvance,     ledger: reconciliation.ledgerClosingCr, diff: reconciliation.diffCr },
+            { label: 'Combined',        fifo: reconciliation.combinedFifo,    ledger: reconciliation.combinedLedger,  diff: reconciliation.diffCombined },
+            { label: 'Signed Net',      fifo: reconciliation.signedFifo,      ledger: reconciliation.ledgerClosingSigned, diff: reconciliation.diffSigned },
+          ].map(({ label, fifo, ledger, diff }) => {
+            const ok = Math.abs(diff) <= reconciliation.tolerance;
+            return (
+              <div key={label} className={`rounded-lg border p-3 ${ok ? 'border-emerald-100 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
+                <p className={`font-semibold mb-1.5 ${ok ? 'text-emerald-700' : 'text-amber-700'}`}>{label}</p>
+                <div className="space-y-0.5 text-slate-600">
+                  <div className="flex justify-between gap-2"><span>FIFO</span><span className="font-mono">{formatAmount(fifo)}</span></div>
+                  <div className="flex justify-between gap-2"><span>Ledger</span><span className="font-mono">{formatAmount(ledger)}</span></div>
+                  <div className={`flex justify-between gap-2 font-semibold pt-1 border-t mt-1 ${ok ? 'border-emerald-200 text-emerald-700' : 'border-amber-300 text-amber-700'}`}>
+                    <span>Diff</span><span className="font-mono">{formatAmount(diff)}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white/95 p-5 shadow-sm space-y-4">
-        <div className="grid grid-cols-1 lg:grid-cols-7 gap-3">
-          <div className="relative lg:col-span-2">
-            <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
+      {/* ── Filter bar ── */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3">
+        <div className="flex flex-wrap gap-2 items-center">
+          <div className="relative flex-1 min-w-[160px]">
+            <Search className="absolute left-2.5 top-2.5 text-slate-400" size={14} />
             <input
               type="text"
-              placeholder="Search debtor or voucher..."
-              className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-slate-900 focus:outline-none"
+              placeholder="Search debtor or voucher…"
+              className="w-full pl-8 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
-          <div>
-            <input
-              type="text"
-              inputMode="numeric"
-              maxLength={10}
-              value={asOfDateText}
-              onChange={(e) => {
-                const clean = e.target.value.replace(/[^\d]/g, '').slice(0, 8);
-                if (clean.length <= 2) setAsOfDateText(clean);
-                else if (clean.length <= 4) setAsOfDateText(`${clean.slice(0, 2)}/${clean.slice(2)}`);
-                else setAsOfDateText(`${clean.slice(0, 2)}/${clean.slice(2, 4)}/${clean.slice(4)}`);
-              }}
-              className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-slate-900 focus:outline-none ${
-                isAsOfDateValid ? 'border-slate-300' : 'border-amber-400'
-              }`}
-              placeholder="As On dd/mm/yyyy"
-            />
-          </div>
-          <div>
-            <select
-              value={bucketFilter}
-              onChange={(e) => setBucketFilter(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
-            >
-              <option value="all">All Buckets</option>
-              {AGE_BUCKETS.map((b) => (
-                <option key={b.label} value={b.label}>
-                  {b.label}
-                </option>
-              ))}
-              <option value="advance">Advance Only</option>
-            </select>
-          </div>
-          <button
-            onClick={expandAll}
-            className="px-4 py-2 rounded-lg text-sm font-bold border border-slate-300 text-slate-700 bg-slate-100 hover:bg-slate-200"
+          <input
+            type="text"
+            inputMode="numeric"
+            maxLength={10}
+            value={asOfDateText}
+            onChange={(e) => {
+              const clean = e.target.value.replace(/[^\d]/g, '').slice(0, 8);
+              if (clean.length <= 2) setAsOfDateText(clean);
+              else if (clean.length <= 4) setAsOfDateText(`${clean.slice(0, 2)}/${clean.slice(2)}`);
+              else setAsOfDateText(`${clean.slice(0, 2)}/${clean.slice(2, 4)}/${clean.slice(4)}`);
+            }}
+            className={`w-36 px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none ${
+              isAsOfDateValid ? 'border-slate-200' : 'border-amber-400 bg-amber-50'
+            }`}
+            placeholder="As On dd/mm/yyyy"
+          />
+          <select
+            value={bucketFilter}
+            onChange={(e) => setBucketFilter(e.target.value)}
+            className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            Expand All
-          </button>
-          <button
-            onClick={collapseAll}
-            className="px-4 py-2 rounded-lg text-sm font-bold border border-slate-300 text-slate-700 bg-slate-100 hover:bg-slate-200"
-          >
-            Collapse All
-          </button>
-          <button
-            onClick={exportExcel}
-            className="px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-bold hover:bg-slate-800 flex items-center justify-center gap-2"
-          >
-            <Download size={16} />
-            Export Excel
+            <option value="all">All Buckets</option>
+            {AGE_BUCKETS.map((b) => <option key={b.label} value={b.label}>{b.label} days</option>)}
+            <option value="advance">Advance Only</option>
+          </select>
+          <button onClick={expandAll}   className="px-3 py-2 rounded-lg text-sm border border-slate-200 text-slate-600 hover:bg-slate-50">Expand All</button>
+          <button onClick={collapseAll} className="px-3 py-2 rounded-lg text-sm border border-slate-200 text-slate-600 hover:bg-slate-50">Collapse All</button>
+          <button onClick={exportExcel} className="ml-auto px-4 py-2 bg-slate-800 text-white rounded-lg text-sm font-medium hover:bg-slate-700 flex items-center gap-1.5">
+            <Download size={14} /> Export Excel
           </button>
         </div>
         {!isAsOfDateValid && (
-          <p className="text-xs text-amber-700">
-            Invalid date format. Continue in `dd/mm/yyyy`; calculation currently falls back to latest available date.
-          </p>
+          <p className="mt-2 text-xs text-amber-600">Invalid date — use dd/mm/yyyy. Falling back to latest date in data.</p>
         )}
       </div>
 
+      {/* ── Main table ── */}
       {filteredPartyResults.length === 0 ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-14 text-center text-slate-400 shadow-sm">
-          No debtors match current filters.
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm py-16 text-center">
+          <p className="text-slate-400 text-sm">No debtors match the current filters.</p>
         </div>
       ) : (
-        <div className="rounded-2xl border border-slate-900 bg-slate-950 text-slate-100 shadow-xl overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-800 bg-slate-900">
-            <h3 className="text-sm font-black">Debtor Ageing Matrix (FIFO)</h3>
-            <p className="text-xs text-slate-400 mt-1">Bucket values are shown as columns for CFO-level review.</p>
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-700">Debtor Ageing Matrix (FIFO)</h3>
+              <p className="text-xs text-slate-400 mt-0.5">Click any row to see invoice breakdown. Bucket colours indicate ageing risk.</p>
+            </div>
+            <div className="flex items-center gap-3 text-xs text-slate-400">
+              {AGE_BUCKETS.map((b, i) => (
+                <span key={b.label} className={`hidden lg:inline px-2 py-0.5 rounded-full text-[10px] font-medium ${BUCKET_STYLES[i].th}`}>{b.label}</span>
+              ))}
+            </div>
           </div>
           <div className="overflow-x-auto">
-            <table className="min-w-[1520px] w-full text-sm">
-              <thead className="sticky top-0 z-10">
-                <tr className="bg-slate-900 text-[11px] uppercase tracking-wider text-slate-300 border-b border-slate-800">
-                  <th rowSpan={2} className="px-4 py-3 text-left font-bold">Debtor</th>
-                  <th rowSpan={2} className="px-3 py-3 text-right font-bold">Opening Dr</th>
-                  <th rowSpan={2} className="px-3 py-3 text-right font-bold">Opening Cr</th>
-                  <th rowSpan={2} className="px-3 py-3 text-right font-bold">Ledger Dr</th>
-                  <th rowSpan={2} className="px-3 py-3 text-right font-bold">Ledger Cr</th>
-                  <th rowSpan={2} className="px-3 py-3 text-right font-bold">FIFO Receivable</th>
-                  <th rowSpan={2} className="px-3 py-3 text-right font-bold">FIFO Advance</th>
-                  <th rowSpan={2} className="px-3 py-3 text-right font-bold">Net FIFO</th>
-                  <th colSpan={AGE_BUCKETS.length} className="px-3 py-2 text-center font-bold text-cyan-200 bg-slate-800">
-                    Ageing Buckets
-                  </th>
-                  <th rowSpan={2} className="px-3 py-3 text-right font-bold">Invoices</th>
-                  <th rowSpan={2} className="px-3 py-3 text-left font-bold">Details</th>
-                </tr>
-                <tr className="bg-slate-800 text-[11px] uppercase tracking-wide text-cyan-200 border-b border-slate-700">
-                  {AGE_BUCKETS.map((bucket) => (
-                    <th key={bucket.label} className="px-3 py-2 text-right font-bold">
-                      {bucket.label}
-                    </th>
+            <table className="min-w-[1380px] w-full text-sm border-collapse">
+              <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200">
+                <tr className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">
+                  <th className="w-8 px-3 py-3" />
+                  <th className="px-4 py-3 text-left">Debtor</th>
+                  <th className="px-3 py-3 text-right">Opening Dr</th>
+                  <th className="px-3 py-3 text-right">Opening Cr</th>
+                  <th className="px-3 py-3 text-right">Ledger Dr</th>
+                  <th className="px-3 py-3 text-right">Ledger Cr</th>
+                  <th className="px-3 py-3 text-right bg-blue-50 text-blue-700">FIFO Recv.</th>
+                  <th className="px-3 py-3 text-right bg-emerald-50 text-emerald-700">Advance</th>
+                  <th className="px-3 py-3 text-right">Net FIFO</th>
+                  {AGE_BUCKETS.map((b, i) => (
+                    <th key={b.label} className={`px-3 py-3 text-right border-x border-slate-100 ${BUCKET_STYLES[i].th}`}>{b.label}</th>
                   ))}
+                  <th className="px-3 py-3 text-right text-slate-500">#Inv</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800">
-                {filteredPartyResults.map((party) => {
-                  const opening = splitDrCr(party.openingBalance);
-                  const closing = splitDrCr(party.closingBalance);
-                  const isCollapsed = collapsedParties[party.party] ?? false;
-                  const net = party.closingReceivable - party.advanceAmount;
+              <tbody>
+                {filteredPartyResults.map((party, rowIdx) => {
+                  const opening   = splitDrCr(party.openingBalance);
+                  const closing   = splitDrCr(party.closingBalance);
+                  const isExpanded = !(collapsedParties[party.party] ?? false);
+                  const net       = party.closingReceivable - party.advanceAmount;
+                  const toggleRow = () => setCollapsedParties((p) => ({ ...p, [party.party]: isExpanded }));
 
                   return (
                     <React.Fragment key={party.party}>
-                      <tr className="hover:bg-slate-900/80">
-                        <td className="px-4 py-3 font-semibold text-white">{party.party}</td>
-                        <td className="px-3 py-3 text-right font-mono">{formatAmount(opening.dr)}</td>
-                        <td className="px-3 py-3 text-right font-mono">{formatAmount(opening.cr)}</td>
-                        <td className="px-3 py-3 text-right font-mono">{formatAmount(closing.dr)}</td>
-                        <td className="px-3 py-3 text-right font-mono">{formatAmount(closing.cr)}</td>
-                        <td className="px-3 py-3 text-right font-mono font-bold text-cyan-200">
-                          {formatAmount(party.closingReceivable)}
+                      {/* Summary row */}
+                      <tr
+                        onClick={toggleRow}
+                        className={`cursor-pointer border-b border-slate-100 transition-colors ${rowIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'} hover:bg-blue-50/40`}
+                      >
+                        <td className="px-3 py-3 text-slate-400">
+                          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                         </td>
-                        <td className="px-3 py-3 text-right font-mono text-emerald-300">
-                          {formatAmount(party.advanceAmount)}
-                        </td>
-                        <td className="px-3 py-3 text-right font-mono font-bold text-white">{formatAmount(net)}</td>
-                        {AGE_BUCKETS.map((bucket) => (
-                          <td key={`${party.party}-${bucket.label}`} className="px-3 py-3 text-right font-mono text-slate-300">
-                            {formatAmount(party.bucketTotals[bucket.label] || 0)}
-                          </td>
-                        ))}
-                        <td className="px-3 py-3 text-right font-semibold text-slate-200">{party.invoices.length}</td>
-                        <td className="px-3 py-3">
-                          <button
-                            onClick={() =>
-                              setCollapsedParties((prev) => ({
-                                ...prev,
-                                [party.party]: !isCollapsed,
-                              }))
-                            }
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-slate-600 text-xs font-semibold text-slate-200 hover:bg-slate-800"
-                          >
-                            {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                            {isCollapsed ? 'Expand' : 'Collapse'}
-                          </button>
-                        </td>
+                        <td className="px-4 py-3 font-medium text-slate-800">{party.party}</td>
+                        <td className="px-3 py-3 text-right font-mono text-slate-500 text-xs">{opening.dr > 0 ? formatAmount(opening.dr) : '—'}</td>
+                        <td className="px-3 py-3 text-right font-mono text-slate-500 text-xs">{opening.cr > 0 ? formatAmount(opening.cr) : '—'}</td>
+                        <td className="px-3 py-3 text-right font-mono text-slate-600 text-xs">{closing.dr > 0 ? formatAmount(closing.dr) : '—'}</td>
+                        <td className="px-3 py-3 text-right font-mono text-slate-600 text-xs">{closing.cr > 0 ? formatAmount(closing.cr) : '—'}</td>
+                        <td className="px-3 py-3 text-right font-mono font-semibold text-blue-700 bg-blue-50/40">{formatAmount(party.closingReceivable)}</td>
+                        <td className="px-3 py-3 text-right font-mono text-emerald-700 bg-emerald-50/30">{party.advanceAmount > 0 ? formatAmount(party.advanceAmount) : '—'}</td>
+                        <td className="px-3 py-3 text-right font-mono font-semibold text-slate-700">{formatAmount(net)}</td>
+                        {AGE_BUCKETS.map((b, i) => {
+                          const v = party.bucketTotals[b.label] || 0;
+                          return (
+                            <td key={b.label} className={`px-3 py-3 text-right font-mono text-xs border-x border-slate-100 ${BUCKET_STYLES[i].td(v)}`}>
+                              {v > 0 ? formatAmount(v) : '—'}
+                            </td>
+                          );
+                        })}
+                        <td className="px-3 py-3 text-right text-slate-500 text-xs">{party.invoices.length}</td>
                       </tr>
-                      {!isCollapsed && (
-                        <tr className="bg-slate-900/60">
-                          <td colSpan={tableColumnCount} className="px-4 py-4">
-                            <div className="rounded-xl border border-slate-700 bg-slate-950/70 overflow-hidden">
-                              <div className="px-4 py-3 border-b border-slate-700 flex flex-wrap items-center gap-2 text-xs">
-                                <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 bg-cyan-950 text-cyan-200 border border-cyan-700 font-semibold">
-                                  <Wallet size={12} />
+
+                      {/* Expanded invoice detail */}
+                      {isExpanded && (
+                        <tr className="border-b border-slate-200">
+                          <td colSpan={9 + AGE_BUCKETS.length + 1} className="p-0">
+                            <div className="mx-4 my-3 rounded-lg border border-slate-200 overflow-hidden">
+                              {/* Sub-header chips */}
+                              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center gap-2 text-xs">
+                                <span className="font-medium text-slate-600">{party.party}</span>
+                                <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
                                   Receivable {formatAmount(party.closingReceivable)}
                                 </span>
-                                <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 bg-emerald-950 text-emerald-200 border border-emerald-700 font-semibold">
-                                  <Wallet size={12} />
-                                  Advance {formatAmount(party.advanceAmount)}
-                                </span>
-                                <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 bg-slate-800 text-slate-200 border border-slate-600 font-semibold">
-                                  <Landmark size={12} />
-                                  Closing Dr {formatAmount(closing.dr)} / Cr {formatAmount(closing.cr)}
-                                </span>
+                                {party.advanceAmount > 0 && (
+                                  <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-medium">
+                                    Advance {formatAmount(party.advanceAmount)}
+                                  </span>
+                                )}
+                                <span className="text-slate-400">Closing Dr {formatAmount(closing.dr)} · Cr {formatAmount(closing.cr)}</span>
                               </div>
                               {party.invoices.length === 0 ? (
-                                <div className="px-4 py-6 text-sm text-slate-300">
-                                  No pending invoices.{' '}
-                                  {party.advanceAmount > 0
-                                    ? `Excess payment shown as advance: ${formatAmount(party.advanceAmount)}`
-                                    : 'No advance balance.'}
+                                <div className="px-4 py-5 text-sm text-slate-400">
+                                  No pending invoices.{party.advanceAmount > 0 ? ` Excess payment of ${formatAmount(party.advanceAmount)} recorded as advance.` : ''}
                                 </div>
                               ) : (
-                                <div className="overflow-x-auto">
-                                  <table className="min-w-[760px] w-full text-sm">
-                                    <thead className="bg-slate-900 text-slate-300 text-[11px] font-bold uppercase border-b border-slate-700">
-                                      <tr>
-                                        <th className="px-4 py-3 text-left">Voucher / Invoice</th>
-                                        <th className="px-4 py-3 text-left">Invoice Date</th>
-                                        <th className="px-4 py-3 text-right">Age (Days)</th>
-                                        <th className="px-4 py-3 text-left">Bucket</th>
-                                        <th className="px-4 py-3 text-right">Original</th>
-                                        <th className="px-4 py-3 text-right">Outstanding</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-800">
-                                      {party.invoices.map((inv, idx) => (
-                                        <tr
-                                          key={`${party.party}-${inv.voucherNumber}-${inv.invoiceDate}-${idx}`}
-                                          className="hover:bg-slate-900/70"
-                                        >
-                                          <td className="px-4 py-3 font-semibold text-slate-100">{inv.voucherNumber}</td>
-                                          <td className="px-4 py-3 text-slate-300">{isoToDdMmYyyy(inv.invoiceDate)}</td>
-                                          <td className="px-4 py-3 text-right font-mono">{inv.ageDays}</td>
-                                          <td className="px-4 py-3 text-slate-300">{inv.bucket}</td>
-                                          <td className="px-4 py-3 text-right font-mono text-slate-300">
-                                            {formatAmount(inv.originalAmount)}
+                                <table className="w-full text-sm">
+                                  <thead className="bg-slate-50 text-[11px] text-slate-500 uppercase tracking-wider border-b border-slate-200">
+                                    <tr>
+                                      <th className="px-4 py-2.5 text-left">Voucher / Invoice</th>
+                                      <th className="px-4 py-2.5 text-left">Invoice Date</th>
+                                      <th className="px-4 py-2.5 text-right">Age (Days)</th>
+                                      <th className="px-4 py-2.5 text-left">Bucket</th>
+                                      <th className="px-4 py-2.5 text-right">Original Amount</th>
+                                      <th className="px-4 py-2.5 text-right">Outstanding</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100">
+                                    {party.invoices.map((inv, idx) => {
+                                      const bi = AGE_BUCKETS.findIndex((b) => b.label === inv.bucket);
+                                      const bs = BUCKET_STYLES[bi >= 0 ? bi : 0];
+                                      return (
+                                        <tr key={`${party.party}-${inv.voucherNumber}-${idx}`} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
+                                          <td className="px-4 py-2.5 font-medium text-slate-700">{inv.voucherNumber}</td>
+                                          <td className="px-4 py-2.5 text-slate-500">{isoToDdMmYyyy(inv.invoiceDate)}</td>
+                                          <td className="px-4 py-2.5 text-right font-mono text-slate-600">{inv.ageDays}</td>
+                                          <td className="px-4 py-2.5">
+                                            <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${bs.th}`}>{inv.bucket}</span>
                                           </td>
-                                          <td className="px-4 py-3 text-right font-mono font-bold text-cyan-200">
+                                          <td className="px-4 py-2.5 text-right font-mono text-slate-500">{formatAmount(inv.originalAmount)}</td>
+                                          <td className={`px-4 py-2.5 text-right font-mono font-semibold ${bs.td(inv.outstandingAmount)}`}>
                                             {formatAmount(inv.outstandingAmount)}
                                           </td>
                                         </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                </div>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
                               )}
                             </div>
                           </td>
@@ -926,23 +869,28 @@ const DebtorAgeingFIFO: React.FC<DebtorAgeingFIFOProps> = ({ data }) => {
                   );
                 })}
               </tbody>
-              <tfoot className="bg-slate-900 border-t-2 border-slate-700">
-                <tr className="text-[11px] uppercase tracking-wide text-slate-200 font-bold">
-                  <td className="px-4 py-3">Total</td>
+
+              {/* Grand total footer */}
+              <tfoot className="border-t-2 border-slate-300 bg-slate-50">
+                <tr className="text-xs font-semibold text-slate-700">
+                  <td className="px-3 py-3" />
+                  <td className="px-4 py-3">Total ({totals.parties} debtors)</td>
                   <td className="px-3 py-3 text-right font-mono">{formatAmount(totals.totalOpeningDr)}</td>
                   <td className="px-3 py-3 text-right font-mono">{formatAmount(totals.totalOpeningCr)}</td>
                   <td className="px-3 py-3 text-right font-mono">{formatAmount(totals.totalClosingDr)}</td>
                   <td className="px-3 py-3 text-right font-mono">{formatAmount(totals.totalClosingCr)}</td>
-                  <td className="px-3 py-3 text-right font-mono text-cyan-200">{formatAmount(totals.totalReceivable)}</td>
-                  <td className="px-3 py-3 text-right font-mono text-emerald-300">{formatAmount(totals.totalAdvance)}</td>
-                  <td className="px-3 py-3 text-right font-mono">{formatAmount(netReceivable)}</td>
-                  {AGE_BUCKETS.map((bucket) => (
-                    <td key={`total-${bucket.label}`} className="px-3 py-3 text-right font-mono">
-                      {formatAmount(bucketGrandTotals[bucket.label] || 0)}
-                    </td>
-                  ))}
+                  <td className="px-3 py-3 text-right font-mono font-bold text-blue-700 bg-blue-50">{formatAmount(totals.totalReceivable)}</td>
+                  <td className="px-3 py-3 text-right font-mono text-emerald-700 bg-emerald-50">{formatAmount(totals.totalAdvance)}</td>
+                  <td className="px-3 py-3 text-right font-mono font-bold">{formatAmount(netReceivable)}</td>
+                  {AGE_BUCKETS.map((b, i) => {
+                    const v = bucketGrandTotals[b.label] || 0;
+                    return (
+                      <td key={b.label} className={`px-3 py-3 text-right font-mono border-x border-slate-200 ${BUCKET_STYLES[i].foot}`}>
+                        {formatAmount(v)}
+                      </td>
+                    );
+                  })}
                   <td className="px-3 py-3 text-right">{totals.invoiceCount}</td>
-                  <td className="px-3 py-3">-</td>
                 </tr>
               </tfoot>
             </table>
