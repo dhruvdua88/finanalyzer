@@ -342,9 +342,12 @@ const ProfitLossAnalysis: React.FC<{ data: LedgerEntry[] }> = ({ data }) => {
   }, [data]);
 
   const inMemoryMonths = useMemo(() => {
-    return Array.from(new Set(accountingRows.map((row) => monthKeyFromDate(row.date)).filter(Boolean))).sort(
-      (a, b) => monthSortValue(a) - monthSortValue(b)
-    );
+    const keys: string[] = [];
+    for (const row of accountingRows) {
+      const k = monthKeyFromDate(String(row.date || ''));
+      if (k) keys.push(k);
+    }
+    return Array.from(new Set(keys)).sort((a, b) => monthSortValue(a) - monthSortValue(b));
   }, [accountingRows]);
 
   useEffect(() => {
