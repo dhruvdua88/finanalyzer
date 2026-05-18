@@ -1,0 +1,42 @@
+/* FinAnalyzer global styles */
+
+/* Shimmer animation for skeleton loading */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+}
+
+.dark .skeleton-shimmer {
+  background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+  background-size: 800px 100%;
+}
+
+/* Smooth sidebar transitions */
+.nav-section-title {
+  letter-spacing: 0.08em;
+}
+
+/* Badge pulse for new anomalies */
+@keyframes badge-pop {
+  0%   { transform: scale(0.6); opacity: 0; }
+  80%  { transform: scale(1.1); }
+  100% { transform: scale(1);   opacity: 1; }
+}
+.badge-pop {
+  animation: badge-pop 0.25s ease-out forwards;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar               { width: 6px; height: 6px; }
+::-webkit-scrollbar-track         { background: #f1f5f9; }
+::-webkit-scrollbar-thumb         { background: #cbd5e1; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover   { background: #94a3b8; }
+
+html.dark ::-webkit-scrollbar-track { background: #1e293b; }
+html.dark ::-webkit-scrollbar-thumb { background: #475569; }
