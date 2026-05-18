@@ -58,3 +58,5 @@ FinAnalyzer_Presenter_Notes.md
 # (delete the next line if you want screenshots tracked)
 # SCR-*.png
 FinAnalyzer_v*.zip
+finanalyzer_py/**/__pycache__
+finanalyzer_py/**/*.pyc
